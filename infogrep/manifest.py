@@ -151,6 +151,21 @@ class Manifest:
     def commit(self) -> None:
         self._conn.commit()
 
+    def iter_passages(self):
+        """Stream every stored passage as a Row (memory-light; uses a server-side cursor)."""
+        cur = self._conn.execute(
+            "SELECT passage_id, doc_id, path, ordinal, page, offset, text "
+            "FROM passages ORDER BY path, ordinal"
+        )
+        while True:
+            rows = cur.fetchmany(500)
+            if not rows:
+                break
+            yield from rows
+
+    def count_passages(self) -> int:
+        return self._conn.execute("SELECT COUNT(*) AS c FROM passages").fetchone()["c"]
+
     # -- stats -------------------------------------------------------------
 
     def stats(self) -> dict:

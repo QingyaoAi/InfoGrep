@@ -113,6 +113,8 @@ class Indexer:
             report.n_files = stats["n_files"]
             report.n_passages = stats["n_passages"]
 
+            self._build_backends(manifest, report)
+
         # reset per-run hash cache
         self._hash_cache: dict[Path, str] = {}
         return report
@@ -152,3 +154,19 @@ class Indexer:
     def _build_passages(self, abs_path: Path, rel: str):
         pages = extract(abs_path)
         return chunk_pages(rel, pages, self.config.chunk)
+
+    def _build_backends(self, manifest: Manifest, report: IndexReport) -> None:
+        """Rebuild retrieval indices from the manifest when passages changed."""
+        cfg = self.config
+        changed = report.added + report.modified + report.deleted > 0
+
+        if cfg.sparse.enabled:
+            from .retrieval.sparse import SparseIndex
+
+            sparse = SparseIndex(cfg.sparse_dir, cfg.cache_dir)
+            index_exists = cfg.sparse_dir.is_dir() and any(cfg.sparse_dir.glob("segments*"))
+            if changed or not index_exists:
+                try:
+                    sparse.build(manifest.iter_passages())
+                except Exception as exc:  # never let JVM/index issues lose the manifest
+                    report.errors.append(f"sparse index: {exc}")

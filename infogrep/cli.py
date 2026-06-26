@@ -65,14 +65,34 @@ def search(
     query: str = typer.Argument(..., help="Search query."),
     directory: Path = typer.Option(Path.cwd(), "--dir", "-d", help="Indexed directory."),
     k: int = typer.Option(10, "--k", help="Number of results."),
-    mode: str = typer.Option(
-        "hybrid", "--mode", "-m", help="sparse | dense | kb | hybrid."
-    ),
+    mode: str = typer.Option("sparse", "--mode", "-m", help="sparse | dense | kb | hybrid."),
+    prf: bool = typer.Option(False, "--prf", help="RM3 pseudo-relevance feedback (sparse)."),
 ) -> None:
     """Query indexed content."""
-    typer.echo(f"[infogrep] query={query!r} mode={mode} k={k} dir={directory}")
-    typer.echo("[infogrep] search is not yet implemented (lands in M2-M5).")
-    raise typer.Exit(code=1)
+    cfg = Config.load(directory)
+
+    if mode == "sparse":
+        from .retrieval.sparse import SparseIndex
+
+        try:
+            results = SparseIndex(cfg.sparse_dir, cfg.cache_dir).search(query, k=k, prf=prf)
+        except FileNotFoundError as exc:
+            typer.echo(f"[infogrep] {exc}", err=True)
+            raise typer.Exit(code=2)
+    elif mode in {"dense", "kb", "hybrid"}:
+        typer.echo(f"[infogrep] mode '{mode}' is not implemented yet (dense=M3, kb=M5, hybrid=M4).")
+        raise typer.Exit(code=1)
+    else:
+        typer.echo(f"[infogrep] unknown mode: {mode}", err=True)
+        raise typer.Exit(code=2)
+
+    if not results:
+        typer.echo("[infogrep] no results.")
+        return
+    for i, r in enumerate(results, start=1):
+        loc = f"{r.path}" + (f" p.{r.page}" if r.page is not None else "")
+        typer.echo(f"{i:2}. [{r.score:.3f}] {loc}")
+        typer.echo(f"    {r.snippet.strip()[:160]}")
 
 
 @app.command()

@@ -12,6 +12,7 @@ dependencies = [
     "python-docx>=1.2.0",
     "python-pptx>=1.0.2",
     "pathspec>=1.1.1",
+    "pyserini>=1.2.0",
 ]
 
 # Heavy, milestone-specific deps are added later via `uv add`:
