@@ -189,6 +189,11 @@ All milestones M0–M6 complete.
 ### Later / optional
 Cross-encoder reranker; PRF tuning; multi-directory registry; result caching; eval harness.
 
+**Incremental dense updates** ✅ — dense applies the per-file passage delta to Zvec
+(delete removed ids, upsert changed passages) instead of rebuilding; embeddings still
+cached by content hash. Sparse stays a full Lucene rebuild on change (runs no model →
+sub-second; true Lucene incremental would mean hand-replicating Anserini's doc schema).
+
 ---
 
 ## 6. Key risks & mitigations

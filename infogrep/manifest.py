@@ -166,6 +166,29 @@ class Manifest:
     def count_passages(self) -> int:
         return self._conn.execute("SELECT COUNT(*) AS c FROM passages").fetchone()["c"]
 
+    def passage_ids_for_path(self, path: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT passage_id FROM passages WHERE path = ?", (path,)
+        ).fetchall()
+        return [r["passage_id"] for r in rows]
+
+    def passages_for_paths(self, paths):
+        """Stream passage rows for the given file paths (for incremental backend inserts)."""
+        paths = list(paths)
+        for i in range(0, len(paths), 400):
+            batch = paths[i : i + 400]
+            placeholders = ",".join("?" * len(batch))
+            cur = self._conn.execute(
+                "SELECT passage_id, doc_id, path, ordinal, page, offset, text "
+                f"FROM passages WHERE path IN ({placeholders}) ORDER BY path, ordinal",
+                batch,
+            )
+            while True:
+                rows = cur.fetchmany(500)
+                if not rows:
+                    break
+                yield from rows
+
     def get_passages_by_ids(self, passage_ids: list[str]) -> dict[str, sqlite3.Row]:
         """Look up passage rows by id (for enriching retriever hits with metadata)."""
         out: dict[str, sqlite3.Row] = {}

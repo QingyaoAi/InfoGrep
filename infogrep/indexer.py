@@ -60,6 +60,9 @@ class Indexer:
         with Manifest(cfg.manifest_path) as manifest:
             version = manifest.next_version()
             seen: set[str] = set()
+            # Passage-level delta for incremental backend updates.
+            removed_ids: set[str] = set()
+            changed_paths: set[str] = set()
 
             for abs_path, rel in walk(cfg):
                 seen.add(rel)
@@ -85,6 +88,11 @@ class Indexer:
                     report.errors.append(f"{rel}: {exc}")
                     continue
 
+                if change == "modified":
+                    # Capture old passage ids before they're replaced, so the backends
+                    # can delete them incrementally.
+                    removed_ids.update(manifest.passage_ids_for_path(rel))
+
                 content_hash = self._cached_hash(abs_path)
                 # File row must exist before passages (passages.path FK -> files.path).
                 manifest.upsert_file(
@@ -96,6 +104,7 @@ class Indexer:
                     version=version,
                 )
                 manifest.replace_passages(rel, passages)
+                changed_paths.add(rel)
                 if change == "added":
                     report.added += 1
                 else:
@@ -103,6 +112,7 @@ class Indexer:
 
             # Files in the manifest but no longer on disk are deleted.
             for rel in manifest.all_paths() - seen:
+                removed_ids.update(manifest.passage_ids_for_path(rel))
                 manifest.delete_file(rel)
                 report.deleted += 1
 
@@ -113,7 +123,7 @@ class Indexer:
             report.n_files = stats["n_files"]
             report.n_passages = stats["n_passages"]
 
-            self._build_backends(manifest, report)
+            self._build_backends(manifest, report, full, removed_ids, changed_paths)
 
         # reset per-run hash cache
         self._hash_cache: dict[Path, str] = {}
@@ -190,8 +200,22 @@ class Indexer:
         )
         return chunk_pages(rel, pages, self.config.chunk)
 
-    def _build_backends(self, manifest: Manifest, report: IndexReport) -> None:
-        """Rebuild retrieval indices from the manifest when passages changed."""
+    def _build_backends(
+        self,
+        manifest: Manifest,
+        report: IndexReport,
+        full: bool,
+        removed_ids: set[str],
+        changed_paths: set[str],
+    ) -> None:
+        """Update retrieval indices from the manifest after a reindex.
+
+        Dense applies the passage-level delta incrementally (delete removed ids, upsert
+        changed passages) when a complete, embedder-matching index exists; otherwise it
+        rebuilds. Sparse (Lucene/BM25) rebuilds on any change — it runs no model, so a
+        full rebuild is sub-second, and true Lucene incremental would mean replicating
+        Anserini's analyzer/field schema by hand (high risk, little gain).
+        """
         cfg = self.config
         changed = report.added + report.modified + report.deleted > 0
 
@@ -210,11 +234,15 @@ class Indexer:
             from .retrieval.dense import DenseIndex
 
             dense = DenseIndex(cfg)
-            # Rebuild unless a *complete* index exists (embedder.json marks completion;
-            # a partial build from a prior crash/OOM won't have it).
-            dense_exists = (cfg.dense_dir / "embedder.json").is_file()
-            if changed or not dense_exists:
-                try:
-                    dense.build(manifest.iter_passages())
-                except Exception as exc:  # embedding/Zvec issues shouldn't lose the manifest
-                    report.errors.append(f"dense index: {exc}")
+            # A complete index is marked by embedder.json (a partial/OOM'd build lacks it).
+            complete = (cfg.dense_dir / "embedder.json").is_file()
+            # Incremental only if the existing index was built with the same embedder.
+            embedder_matches = complete and dense.built_embedder_name() == dense.embedder.name
+            try:
+                if full or not complete or not embedder_matches:
+                    if changed or not complete:
+                        dense.build(manifest.iter_passages())
+                elif removed_ids or changed_paths:
+                    dense.update(removed_ids, manifest.passages_for_paths(changed_paths))
+            except Exception as exc:  # embedding/Zvec issues shouldn't lose the manifest
+                report.errors.append(f"dense index: {exc}")

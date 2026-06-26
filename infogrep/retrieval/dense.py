@@ -109,6 +109,54 @@ class DenseIndex:
             cache.close()
         return n
 
+    def built_embedder_name(self) -> str | None:
+        """The embedder a complete index was built with (without loading any model)."""
+        if self._meta_path.is_file():
+            return json.loads(self._meta_path.read_text()).get("name")
+        return None
+
+    def update(self, removed_ids, added_passages) -> int:
+        """Incrementally apply a delta to an existing Zvec collection.
+
+        Deletes ``removed_ids`` and (up)inserts ``added_passages`` — no full rebuild.
+        The embedding model is loaded lazily, so a delete-only update never loads it.
+        """
+        import zvec
+
+        collection = zvec.open(path=str(self.dense_dir))
+        removed = list(removed_ids)
+        if removed:
+            try:
+                collection.delete(removed)
+            except Exception:  # tolerate ids already gone
+                for rid in removed:
+                    try:
+                        collection.delete(rid)
+                    except Exception:
+                        pass
+
+        cache: EmbeddingCache | None = None
+        n = 0
+        for batch in _batched(added_passages, _BUILD_BATCH):
+            if cache is None:  # first batch: now we actually need the model
+                cache = EmbeddingCache(self.cache_dir / "embeddings.sqlite", self.embedder.name)
+            vectors = self._embed_with_cache([r["text"] for r in batch], cache, is_query=False)
+            docs = [
+                zvec.Doc(id=row["passage_id"], vectors={_VECTOR_FIELD: vec.tolist()})
+                for row, vec in zip(batch, vectors)
+            ]
+            collection.upsert(docs)
+            n += len(docs)
+            free = getattr(self.embedder, "_free_memory", None)
+            if free:
+                free()
+
+        collection.flush()
+        if cache is not None:
+            self._write_meta(self.embedder.name, self.embedder.dim)
+            cache.close()
+        return n
+
     def _embed_with_cache(self, texts: list[str], cache: EmbeddingCache, is_query: bool):
         keys = [cache.key(t) for t in texts]
         cached = cache.get_many(keys)

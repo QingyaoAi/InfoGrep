@@ -68,6 +68,41 @@ def test_partial_build_is_not_treated_as_complete(tmp_path):
         di.search("anything", k=3)
 
 
+def test_dense_incremental_update_path(tmp_path, monkeypatch):
+    import infogrep.retrieval.dense as dense_mod
+
+    (tmp_path / "a.txt").write_text("alpha unique-apple content")
+    (tmp_path / "b.txt").write_text("beta unique-banana content")
+    cfg = _dense_cfg(tmp_path)
+    Indexer(cfg).reindex()  # full build
+
+    calls = {"build": 0, "update": 0}
+    orig_build, orig_update = dense_mod.DenseIndex.build, dense_mod.DenseIndex.update
+    monkeypatch.setattr(
+        dense_mod.DenseIndex, "build",
+        lambda self, *a, **k: (calls.__setitem__("build", calls["build"] + 1), orig_build(self, *a, **k))[1],
+    )
+    monkeypatch.setattr(
+        dense_mod.DenseIndex, "update",
+        lambda self, *a, **k: (calls.__setitem__("update", calls["update"] + 1), orig_update(self, *a, **k))[1],
+    )
+
+    # Modify a, add c, delete b.
+    (tmp_path / "a.txt").write_text("alpha unique-cherry content")
+    (tmp_path / "c.txt").write_text("gamma unique-date content")
+    (tmp_path / "b.txt").unlink()
+    Indexer(cfg).reindex()
+
+    # Second run took the incremental path, not a full rebuild.
+    assert calls["update"] == 1
+    assert calls["build"] == 0
+
+    di = DenseIndex(cfg)
+    assert di.search("unique-cherry", k=1)[0].path == "a.txt"  # modified content
+    assert di.search("unique-date", k=1)[0].path == "c.txt"  # added
+    assert "b.txt" not in {h.path for h in di.search("unique-banana", k=5)}  # deleted
+
+
 def test_dense_reflects_incremental_delete(tmp_path):
     (tmp_path / "a.txt").write_text("alpha unique zebra content here")
     (tmp_path / "b.txt").write_text("beta ordinary words here")
