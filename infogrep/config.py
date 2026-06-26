@@ -28,6 +28,14 @@ class ChunkConfig:
 
 
 @dataclass
+class IngestConfig:
+    """Ingestion-side options."""
+
+    ocr: bool = False  # OCR PDF pages that have little/no extractable text (needs tesseract)
+    ocr_min_chars: int = 16  # below this many chars on a page, try OCR
+
+
+@dataclass
 class DenseConfig:
     """Dense retrieval settings."""
 
@@ -66,6 +74,7 @@ class Config:
         default_factory=lambda: [".infogrep/**", ".git/**", "**/__pycache__/**"]
     )
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
     sparse: SparseConfig = field(default_factory=SparseConfig)
     dense: DenseConfig = field(default_factory=DenseConfig)
     kb: KnowledgeBaseConfig = field(default_factory=KnowledgeBaseConfig)
@@ -110,6 +119,8 @@ class Config:
                 setattr(base, key, list(data[key]))
         if "chunk" in data:
             base.chunk = ChunkConfig(**{**asdict(base.chunk), **data["chunk"]})
+        if "ingest" in data:
+            base.ingest = IngestConfig(**{**asdict(base.ingest), **data["ingest"]})
         if "sparse" in data:
             base.sparse = SparseConfig(**{**asdict(base.sparse), **data["sparse"]})
         if "dense" in data:

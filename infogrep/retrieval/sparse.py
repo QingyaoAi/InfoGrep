@@ -74,7 +74,12 @@ class SparseIndex:
             "-threads", "4",
             "-storePositions", "-storeDocvectors", "-storeRaw",
         ]
-        subprocess.run(cmd, check=True)
+        # Capture Lucene's verbose INFO logging; only surface it if indexing fails.
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"pyserini indexing failed (exit {proc.returncode}):\n{proc.stderr[-2000:]}"
+            )
         self._searcher = None  # force reopen against the fresh index
         return n
 

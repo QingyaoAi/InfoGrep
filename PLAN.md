@@ -179,9 +179,12 @@ RRF fusion, `search_hybrid`, full MCP server with all tools; wire into Claude Co
 Obsidian CLI wrapper, `search_kb` with graph hops, fold into fusion.
 **Done when:** vault notes + linked context appear in hybrid results.
 
-### M6 — Incremental scheduling + polish (1–2 days)
-launchd daily reindex, `index_status`/`reindex` tools, PRF toggle, OCR fallback,
-exclude rules, docs. **Done when:** daily auto-update works; staleness reported.
+### M6 — Incremental scheduling + polish (1–2 days) ✅
+launchd daily reindex (`infogrep schedule`), `index_status`/`reindex` tools, PRF toggle,
+OCR fallback (tesseract), exclude rules, silenced JVM logs, HF-offline resilience, docs.
+**Done when:** daily auto-update works; staleness reported. ✅
+
+All milestones M0–M6 complete.
 
 ### Later / optional
 Cross-encoder reranker; PRF tuning; multi-directory registry; result caching; eval harness.

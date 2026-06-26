@@ -124,6 +124,14 @@ def status(
     if last:
         when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(last)))
         typer.echo(f"[infogrep] last indexed: {when}")
+    if info.get("stale"):
+        typer.echo(
+            f"[infogrep] STALE: {info['pending']} pending "
+            f"(+{info['pending_added']} ~{info['pending_modified']} -{info['pending_deleted']}) "
+            "— run `infogrep index`"
+        )
+    elif "stale" in info:
+        typer.echo("[infogrep] up to date")
 
 
 @app.command()
@@ -134,6 +142,54 @@ def mcp(
     from .mcp_server import main as serve
 
     serve(directory=str(Path(directory).expanduser().resolve()))
+
+
+schedule_app = typer.Typer(help="Manage daily auto-reindex (macOS launchd).")
+app.add_typer(schedule_app, name="schedule")
+
+
+@schedule_app.command("install")
+def schedule_install(
+    directory: Path = typer.Argument(..., help="Directory to reindex daily."),
+    at: str = typer.Option("03:00", "--at", help="Daily run time, HH:MM (24h)."),
+) -> None:
+    """Install a daily reindex agent for a directory."""
+    from . import scheduler
+
+    try:
+        hour, minute = (int(x) for x in at.split(":", 1))
+    except ValueError:
+        typer.echo(f"[infogrep] invalid --at time: {at!r} (use HH:MM)", err=True)
+        raise typer.Exit(code=2)
+    path = scheduler.install(directory, hour=hour, minute=minute)
+    typer.echo(f"[infogrep] scheduled daily reindex of {Path(directory).resolve()} at {at}")
+    typer.echo(f"[infogrep] launchd agent: {path}")
+
+
+@schedule_app.command("uninstall")
+def schedule_uninstall(
+    directory: Path = typer.Argument(..., help="Directory whose schedule to remove."),
+) -> None:
+    """Remove the daily reindex agent for a directory."""
+    from . import scheduler
+
+    if scheduler.uninstall(directory):
+        typer.echo(f"[infogrep] removed reindex schedule for {Path(directory).resolve()}")
+    else:
+        typer.echo("[infogrep] no schedule found for that directory.")
+
+
+@schedule_app.command("list")
+def schedule_list() -> None:
+    """List installed daily reindex agents."""
+    from . import scheduler
+
+    agents = scheduler.list_agents()
+    if not agents:
+        typer.echo("[infogrep] no reindex schedules installed.")
+        return
+    for a in agents:
+        typer.echo(f"[infogrep] {a['hour']:02d}:{a['minute']:02d} daily  {a['directory']}")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -33,13 +33,20 @@ def _extract_text(path: Path) -> list[ExtractedPage]:
     return [ExtractedPage(page=None, text=text)] if text.strip() else []
 
 
-def _extract_pdf(path: Path) -> list[ExtractedPage]:
+def _extract_pdf(path: Path, ocr: bool = False, ocr_min_chars: int = 16) -> list[ExtractedPage]:
     import fitz  # pymupdf
 
     pages: list[ExtractedPage] = []
     with fitz.open(path) as doc:
         for i, page in enumerate(doc, start=1):
             text = page.get_text("text")
+            # Scanned pages have little/no extractable text; OCR them if asked.
+            if ocr and len(text.strip()) < ocr_min_chars:
+                try:
+                    tp = page.get_textpage_ocr(flags=0, full=True)
+                    text = page.get_text("text", textpage=tp) or text
+                except Exception:
+                    pass  # tesseract missing/failed -> keep whatever we had
             if text.strip():
                 pages.append(ExtractedPage(page=i, text=text))
     return pages
@@ -88,6 +95,8 @@ def is_supported(path: Path) -> bool:
     return suffix in _REGISTRY or suffix in _TEXT_SUFFIXES
 
 
-def extract(path: Path) -> list[ExtractedPage]:
+def extract(path: Path, ocr: bool = False, ocr_min_chars: int = 16) -> list[ExtractedPage]:
     """Extract text pages from ``path`` using the registered extractor."""
+    if path.suffix.lower() == ".pdf":
+        return _extract_pdf(path, ocr=ocr, ocr_min_chars=ocr_min_chars)
     return get_extractor(path)(path)

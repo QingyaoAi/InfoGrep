@@ -24,11 +24,31 @@ uv run pytest            # run tests
 infogrep index <dir>                 # build / update the side-car index for a directory
 infogrep search <query> -d <dir>     # query (modes: hybrid [default] | sparse | dense)
 infogrep search <query> --prf        # sparse query expansion (RM3)
-infogrep status <dir>                 # show index status / staleness
+infogrep status <dir>                 # show index status + staleness (pending changes)
 infogrep mcp --dir <dir>             # run the MCP server (stdio) for coding agents
+infogrep schedule install <dir> --at 03:00   # daily auto-reindex via launchd
+infogrep schedule list | uninstall <dir>
 ```
 
 Indices live in a `<dir>/.infogrep/` side-car; original files are never modified.
+
+## Daily auto-reindex
+
+`infogrep schedule install <dir>` registers a macOS launchd agent that reindexes the
+directory once a day (logs to `<dir>/.infogrep/reindex.log`). `infogrep status` reports
+**staleness** — how many files are added/modified/deleted since the last index — so you
+know when a manual `infogrep index` is due.
+
+## Scanned PDFs (OCR)
+
+PDFs with no text layer (scans) can be OCR'd at ingest time. Requires `tesseract`.
+Enable per directory in `.infogrep/config.toml`:
+
+```toml
+[ingest]
+ocr = true          # OCR pages with little/no extractable text
+ocr_min_chars = 16  # threshold below which a page is OCR'd
+```
 
 ## MCP server (Claude Code / Codex)
 

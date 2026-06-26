@@ -35,12 +35,22 @@ class SentenceTransformerEmbedder:
         self._model = None
         self._dim: int | None = None
 
+    def _load_model(self):
+        import os
+
+        from sentence_transformers import SentenceTransformer
+
+        try:
+            return SentenceTransformer(self.model_name, device=self.device)
+        except Exception:
+            # Transient hub error (e.g. 503) with a cached model: retry offline.
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            return SentenceTransformer(self.model_name, device=self.device)
+
     @property
     def model(self):
         if self._model is None:
-            from sentence_transformers import SentenceTransformer
-
-            self._model = SentenceTransformer(self.model_name, device=self.device)
+            self._model = self._load_model()
             # Method was renamed across sentence-transformers versions.
             get_dim = getattr(
                 self._model, "get_embedding_dimension", None

@@ -119,13 +119,44 @@ class Indexer:
         self._hash_cache: dict[Path, str] = {}
         return report
 
-    def status(self) -> dict:
+    def status(self, check_staleness: bool = True) -> dict:
         if not self.config.manifest_path.is_file():
             return {"indexed": False}
         with Manifest(self.config.manifest_path) as manifest:
             stats = manifest.stats()
-        stats["indexed"] = True
+            stats["indexed"] = True
+            if check_staleness:
+                stats.update(self._staleness(manifest))
+        self._hash_cache = {}
         return stats
+
+    def _staleness(self, manifest: Manifest) -> dict:
+        """Count pending changes vs the filesystem without modifying the index."""
+        cfg = self.config
+        added = modified = 0
+        seen: set[str] = set()
+        for abs_path, rel in walk(cfg):
+            if not is_supported(abs_path):
+                continue
+            seen.add(rel)
+            try:
+                stat = abs_path.stat()
+            except OSError:
+                continue
+            change = self._classify(manifest.get_file(rel), stat, abs_path, full=False)
+            if change == "added":
+                added += 1
+            elif change == "modified":
+                modified += 1
+        deleted = len(manifest.all_paths() - seen)
+        pending = added + modified + deleted
+        return {
+            "pending": pending,
+            "pending_added": added,
+            "pending_modified": modified,
+            "pending_deleted": deleted,
+            "stale": pending > 0,
+        }
 
     # -- internals ---------------------------------------------------------
 
@@ -152,7 +183,11 @@ class Indexer:
         return cache[abs_path]
 
     def _build_passages(self, abs_path: Path, rel: str):
-        pages = extract(abs_path)
+        pages = extract(
+            abs_path,
+            ocr=self.config.ingest.ocr,
+            ocr_min_chars=self.config.ingest.ocr_min_chars,
+        )
         return chunk_pages(rel, pages, self.config.chunk)
 
     def _build_backends(self, manifest: Manifest, report: IndexReport) -> None:
