@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# uv / venv
+.venv/
+venv/
+
+# Caches & tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# InfoGrep side-car indices (never commit indexed data)
+.infogrep/
+
+# Models / weights
+*.safetensors
+*.bin
+models/
+
+# OS
+.DS_Store
+
+# Env
+.env
