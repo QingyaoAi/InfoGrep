@@ -8,6 +8,10 @@ authors = [{ name = "Qingyao Ai", email = "aiqingyao@gmail.com" }]
 dependencies = [
     "typer>=0.12",
     "tomli>=2.0; python_version < '3.11'",
+    "pymupdf>=1.27.2.3",
+    "python-docx>=1.2.0",
+    "python-pptx>=1.0.2",
+    "pathspec>=1.1.1",
 ]
 
 # Heavy, milestone-specific deps are added later via `uv add`:
