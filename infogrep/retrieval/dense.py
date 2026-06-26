@@ -7,6 +7,7 @@ Embeddings are cached by text hash, so unchanged passages are never re-embedded.
 
 from __future__ import annotations
 
+import json
 import shutil
 from typing import Iterable
 
@@ -40,6 +41,24 @@ class DenseIndex:
 
     def _exists(self) -> bool:
         return self.dense_dir.is_dir() and any(self.dense_dir.iterdir())
+
+    @property
+    def _meta_path(self):
+        return self.dense_dir / "embedder.json"
+
+    def _write_meta(self, name: str, dim: int) -> None:
+        self._meta_path.write_text(json.dumps({"name": name, "dim": dim}))
+
+    def _check_embedder_matches(self) -> None:
+        """Fail clearly if config selects a different embedder than the index was built with."""
+        if not self._meta_path.is_file():
+            return
+        built = json.loads(self._meta_path.read_text())
+        if built.get("name") != self.embedder.name:
+            raise FileNotFoundError(
+                f"dense index was built with embedder '{built.get('name')}' but config "
+                f"selects '{self.embedder.name}'. Run `infogrep index <dir> --full` to rebuild."
+            )
 
     # -- build -------------------------------------------------------------
 
@@ -79,6 +98,7 @@ class DenseIndex:
                 collection.insert(docs)
                 n += len(docs)
             collection.flush()
+            self._write_meta(embedder.name, dim)
         finally:
             cache.close()
         return n
@@ -103,6 +123,7 @@ class DenseIndex:
             raise FileNotFoundError(
                 f"No dense index at {self.dense_dir}. Run `infogrep index <dir>` first."
             )
+        self._check_embedder_matches()
 
         qvec = self.embedder.embed([query], is_query=True)[0]
         collection = zvec.open(path=str(self.dense_dir))

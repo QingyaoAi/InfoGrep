@@ -1317,6 +1317,7 @@ name = "infogrep"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "mcp" },
     { name = "pathspec" },
     { name = "pymupdf" },
     { name = "pyserini", version = "1.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1338,6 +1339,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "mcp", specifier = ">=1.28.0" },
     { name = "pathspec", specifier = ">=1.1.1" },
     { name = "pymupdf", specifier = ">=1.27.2.3" },
     { name = "pyserini", specifier = ">=1.2.0" },

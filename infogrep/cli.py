@@ -65,33 +65,34 @@ def search(
     query: str = typer.Argument(..., help="Search query."),
     directory: Path = typer.Option(Path.cwd(), "--dir", "-d", help="Indexed directory."),
     k: int = typer.Option(10, "--k", help="Number of results."),
-    mode: str = typer.Option("sparse", "--mode", "-m", help="sparse | dense | kb | hybrid."),
+    mode: str = typer.Option("hybrid", "--mode", "-m", help="hybrid | sparse | dense | kb."),
     prf: bool = typer.Option(False, "--prf", help="RM3 pseudo-relevance feedback (sparse)."),
 ) -> None:
     """Query indexed content."""
-    cfg = Config.load(directory)
+    from .engine import SearchEngine
 
-    if mode == "sparse":
-        from .retrieval.sparse import SparseIndex
+    engine = SearchEngine(Config.load(directory))
 
-        try:
-            results = SparseIndex(cfg.sparse_dir, cfg.cache_dir).search(query, k=k, prf=prf)
-        except FileNotFoundError as exc:
-            typer.echo(f"[infogrep] {exc}", err=True)
+    try:
+        if mode == "sparse":
+            results = engine.search_sparse(query, k=k, prf=prf)
+        elif mode == "dense":
+            results = engine.search_dense(query, k=k)
+        elif mode == "hybrid":
+            out = engine.search_hybrid(query, k=k, prf=prf)
+            results = out.results
+            if out.used:
+                typer.echo(f"[infogrep] fused: {', '.join(out.used)}")
+            for name, reason in out.skipped.items():
+                typer.echo(f"[infogrep] skipped {name}: {reason}")
+        elif mode == "kb":
+            typer.echo("[infogrep] mode 'kb' is not implemented yet (M5).")
+            raise typer.Exit(code=1)
+        else:
+            typer.echo(f"[infogrep] unknown mode: {mode}", err=True)
             raise typer.Exit(code=2)
-    elif mode == "dense":
-        from .retrieval.dense import DenseIndex
-
-        try:
-            results = DenseIndex(cfg).search(query, k=k)
-        except FileNotFoundError as exc:
-            typer.echo(f"[infogrep] {exc}", err=True)
-            raise typer.Exit(code=2)
-    elif mode in {"kb", "hybrid"}:
-        typer.echo(f"[infogrep] mode '{mode}' is not implemented yet (kb=M5, hybrid=M4).")
-        raise typer.Exit(code=1)
-    else:
-        typer.echo(f"[infogrep] unknown mode: {mode}", err=True)
+    except FileNotFoundError as exc:
+        typer.echo(f"[infogrep] {exc}", err=True)
         raise typer.Exit(code=2)
 
     if not results:
@@ -99,7 +100,7 @@ def search(
         return
     for i, r in enumerate(results, start=1):
         loc = f"{r.path}" + (f" p.{r.page}" if r.page is not None else "")
-        typer.echo(f"{i:2}. [{r.score:.3f}] {loc}")
+        typer.echo(f"{i:2}. [{r.score:.3f}] {loc}  ({r.retriever})")
         typer.echo(f"    {r.snippet.strip()[:160]}")
 
 
@@ -124,6 +125,16 @@ def status(
     if last:
         when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(last)))
         typer.echo(f"[infogrep] last indexed: {when}")
+
+
+@app.command()
+def mcp(
+    directory: Path = typer.Option(Path.cwd(), "--dir", "-d", help="Default indexed directory."),
+) -> None:
+    """Run the MCP server (stdio) so coding agents can call InfoGrep's search tools."""
+    from .mcp_server import main as serve
+
+    serve(directory=str(Path(directory).expanduser().resolve()))
 
 
 if __name__ == "__main__":  # pragma: no cover

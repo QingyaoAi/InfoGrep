@@ -21,9 +21,25 @@ uv run pytest            # run tests
 ## Commands
 
 ```bash
-infogrep index <dir>     # build / update the side-car index for a directory
-infogrep search <query>  # query indexed content
-infogrep status <dir>    # show index status / staleness
+infogrep index <dir>                 # build / update the side-car index for a directory
+infogrep search <query> -d <dir>     # query (modes: hybrid [default] | sparse | dense)
+infogrep search <query> --prf        # sparse query expansion (RM3)
+infogrep status <dir>                 # show index status / staleness
+infogrep mcp --dir <dir>             # run the MCP server (stdio) for coding agents
 ```
 
 Indices live in a `<dir>/.infogrep/` side-car; original files are never modified.
+
+## MCP server (Claude Code / Codex)
+
+InfoGrep exposes its retrieval as MCP tools — `search_sparse`, `search_dense`,
+`search_hybrid`, `index_status`, `reindex`. Register it with Claude Code:
+
+```bash
+claude mcp add infogrep -- uv run infogrep mcp --dir /path/to/your/project
+```
+
+The search tools return `{"results": [...]}` where each result carries
+`path`, `page`, `snippet`, `score`, and `retriever` for easy citation.
+`search_hybrid` (recommended) fuses sparse + dense with reciprocal rank fusion and
+reports which retrievers were `used`/`skipped`.
