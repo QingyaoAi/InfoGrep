@@ -47,11 +47,13 @@ class SparseConfig:
 
 @dataclass
 class KnowledgeBaseConfig:
-    """Obsidian knowledge-base settings."""
+    """Obsidian knowledge-base settings (backed by the Obsidian CLI)."""
 
     enabled: bool = False
-    vault_path: str | None = None
-    hops: int = 1  # graph link hops to expand
+    vault: str | None = None  # Obsidian vault name; None -> the CLI's active vault
+    cli: str = "obsidian"  # path to the Obsidian CLI binary
+    hops: int = 1  # graph link hops to expand (follows links + backlinks)
+    search_limit: int = 10  # how many search hits to seed graph expansion from
 
 
 @dataclass

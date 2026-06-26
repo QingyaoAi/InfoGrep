@@ -46,16 +46,18 @@ and reports which were `used`/`skipped`.
 
 ## Knowledge base (Obsidian vault)
 
-`search_kb` adds graph-aware search over an Obsidian vault: it matches notes by
-content/title/tags, then expands along `[[wikilinks]]` (both directions) so notes
-*connected* to a match surface too. Enable it per indexed directory in
-`<dir>/.infogrep/config.toml`:
+`search_kb` adds graph-aware search over an Obsidian vault via the **Obsidian CLI**:
+it `search`es the live vault, then expands along `links`/`backlinks` so notes
+*connected* to a match surface too. Requires the Obsidian app running with the vault
+open. Enable it per indexed directory in `<dir>/.infogrep/config.toml`:
 
 ```toml
 [kb]
 enabled = true
-vault_path = "/path/to/ObsidianVault"
-hops = 1
+vault = "My Vault"   # Obsidian vault name; omit to use the CLI's active vault
+hops = 1             # link hops to expand (follows links + backlinks)
+# cli = "obsidian"   # path to the Obsidian CLI, if not on PATH
 ```
 
-The vault is read live at query time — no separate index, always current.
+The vault is queried live — no separate index, always current. If the app isn't
+running, `search_kb` is skipped (in hybrid) or reports a clear error (standalone).

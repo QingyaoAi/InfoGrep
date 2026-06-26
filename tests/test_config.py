@@ -26,7 +26,7 @@ def test_config_toml_overrides_defaults(tmp_path: Path):
                 "embedder = 'harrier'",
                 "[kb]",
                 "enabled = true",
-                "vault_path = '/tmp/vault'",
+                "vault = 'My Vault'",
             ]
         )
     )
@@ -36,4 +36,4 @@ def test_config_toml_overrides_defaults(tmp_path: Path):
     assert cfg.chunk.overlap == 64  # untouched default preserved
     assert cfg.dense.embedder == "harrier"
     assert cfg.kb.enabled is True
-    assert cfg.kb.vault_path == "/tmp/vault"
+    assert cfg.kb.vault == "My Vault"
