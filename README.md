@@ -33,7 +33,7 @@ Indices live in a `<dir>/.infogrep/` side-car; original files are never modified
 ## MCP server (Claude Code / Codex)
 
 InfoGrep exposes its retrieval as MCP tools — `search_sparse`, `search_dense`,
-`search_hybrid`, `index_status`, `reindex`. Register it with Claude Code:
+`search_kb`, `search_hybrid`, `index_status`, `reindex`. Register it with Claude Code:
 
 ```bash
 claude mcp add infogrep -- uv run infogrep mcp --dir /path/to/your/project
@@ -41,5 +41,21 @@ claude mcp add infogrep -- uv run infogrep mcp --dir /path/to/your/project
 
 The search tools return `{"results": [...]}` where each result carries
 `path`, `page`, `snippet`, `score`, and `retriever` for easy citation.
-`search_hybrid` (recommended) fuses sparse + dense with reciprocal rank fusion and
-reports which retrievers were `used`/`skipped`.
+`search_hybrid` (recommended) fuses the enabled retrievers with reciprocal rank fusion
+and reports which were `used`/`skipped`.
+
+## Knowledge base (Obsidian vault)
+
+`search_kb` adds graph-aware search over an Obsidian vault: it matches notes by
+content/title/tags, then expands along `[[wikilinks]]` (both directions) so notes
+*connected* to a match surface too. Enable it per indexed directory in
+`<dir>/.infogrep/config.toml`:
+
+```toml
+[kb]
+enabled = true
+vault_path = "/path/to/ObsidianVault"
+hops = 1
+```
+
+The vault is read live at query time — no separate index, always current.

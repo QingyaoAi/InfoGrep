@@ -25,7 +25,10 @@ def test_tools_registered():
     import infogrep.mcp_server as srv
 
     # FastMCP exposes the registered tools; all five should be present.
-    names = {"search_sparse", "search_dense", "search_hybrid", "index_status", "reindex"}
+    names = {
+        "search_sparse", "search_dense", "search_kb",
+        "search_hybrid", "index_status", "reindex",
+    }
     assert names.issubset(set(dir(srv)))
 
 

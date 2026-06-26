@@ -32,6 +32,7 @@ class SearchEngine:
         self.config = config
         self._sparse = None
         self._dense = None
+        self._kb = None
 
     # -- lazy backends -----------------------------------------------------
 
@@ -51,6 +52,14 @@ class SearchEngine:
             self._dense = DenseIndex(self.config)
         return self._dense
 
+    @property
+    def kb(self):
+        if self._kb is None:
+            from .retrieval.kb import KnowledgeBaseIndex
+
+            self._kb = KnowledgeBaseIndex(self.config)
+        return self._kb
+
     # -- individual retrievers --------------------------------------------
 
     def search_sparse(self, query: str, k: int = 10, prf: bool = False) -> list[Result]:
@@ -59,13 +68,16 @@ class SearchEngine:
     def search_dense(self, query: str, k: int = 10) -> list[Result]:
         return self.dense.search(query, k=k)
 
+    def search_kb(self, query: str, k: int = 10) -> list[Result]:
+        return self.kb.search(query, k=k)
+
     def _run(self, name: str, query: str, k: int, prf: bool) -> list[Result]:
         if name == "sparse":
             return self.search_sparse(query, k=k, prf=prf)
         if name == "dense":
             return self.search_dense(query, k=k)
         if name == "kb":
-            raise FileNotFoundError("knowledge-base retriever not available yet (M5)")
+            return self.search_kb(query, k=k)
         raise ValueError(f"unknown retriever: {name}")
 
     def _enabled(self, name: str) -> bool:

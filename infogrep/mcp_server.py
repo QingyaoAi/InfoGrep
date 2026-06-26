@@ -57,6 +57,24 @@ def search_dense(query: str, k: int = 10, directory: str | None = None) -> dict:
 
 
 @mcp.tool()
+def search_kb(query: str, k: int = 10, directory: str | None = None) -> dict:
+    """Graph-aware search over an Obsidian knowledge-base vault.
+
+    Matches notes by content/title/tags, then expands along ``[[wikilinks]]`` so that
+    notes connected to a match are surfaced too. Requires kb.vault_path + kb.enabled
+    in the directory's config.
+
+    Args:
+        query: search query.
+        k: number of results.
+        directory: indexed directory whose config names the vault (defaults to server's).
+
+    Returns a dict with a ``results`` list.
+    """
+    return {"results": [r.to_dict() for r in _engine(directory).search_kb(query, k=k)]}
+
+
+@mcp.tool()
 def search_hybrid(
     query: str,
     k: int = 10,

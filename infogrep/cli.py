@@ -86,8 +86,7 @@ def search(
             for name, reason in out.skipped.items():
                 typer.echo(f"[infogrep] skipped {name}: {reason}")
         elif mode == "kb":
-            typer.echo("[infogrep] mode 'kb' is not implemented yet (M5).")
-            raise typer.Exit(code=1)
+            results = engine.search_kb(query, k=k)
         else:
             typer.echo(f"[infogrep] unknown mode: {mode}", err=True)
             raise typer.Exit(code=2)
