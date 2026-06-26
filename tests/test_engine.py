@@ -32,6 +32,7 @@ def test_hybrid_default_runs_only_enabled(tmp_path):
     # Default retriever set = enabled ones only; disabled sparse simply isn't run.
     _corpus(tmp_path)
     cfg = Config.load(tmp_path)
+    cfg.dense.enabled = True
     cfg.dense.embedder = "hash"
     cfg.sparse.enabled = False
     cfg.kb.enabled = False
@@ -48,6 +49,7 @@ def test_hybrid_explicit_request_reports_skips(tmp_path):
     # Explicitly requesting disabled retrievers reports them as skipped with a reason.
     _corpus(tmp_path)
     cfg = Config.load(tmp_path)
+    cfg.dense.enabled = True
     cfg.dense.embedder = "hash"
     cfg.sparse.enabled = False
     cfg.kb.enabled = False
@@ -65,6 +67,7 @@ def test_hybrid_explicit_request_reports_skips(tmp_path):
 def test_hybrid_fuses_sparse_and_dense(tmp_path):
     _corpus(tmp_path)
     cfg = Config.load(tmp_path)
+    cfg.dense.enabled = True
     cfg.dense.embedder = "hash"  # keep it fast; fusion logic is what we test
     Indexer(cfg).reindex()
 

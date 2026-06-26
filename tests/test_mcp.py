@@ -16,7 +16,7 @@ def _index(tmp_path):
     sidecar = tmp_path / ".infogrep"
     sidecar.mkdir(exist_ok=True)
     (sidecar / "config.toml").write_text(
-        "[sparse]\nenabled = false\n[dense]\nembedder = 'hash'\n"
+        "[sparse]\nenabled = false\n[dense]\nenabled = true\nembedder = 'hash'\n"
     )
     Indexer(Config.load(tmp_path)).reindex()
 

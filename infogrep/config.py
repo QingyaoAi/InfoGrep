@@ -37,9 +37,13 @@ class IngestConfig:
 
 @dataclass
 class DenseConfig:
-    """Dense retrieval settings."""
+    """Dense retrieval settings.
 
-    enabled: bool = True
+    Off by default: embedding a large corpus needs a model download and significant
+    RAM/GPU. Enable per directory with ``[dense] enabled = true`` once you want semantics.
+    """
+
+    enabled: bool = False
     embedder: str = "qwen"  # registry key; see infogrep.retrieval.embedders
     model_name: str = "Qwen/Qwen3-Embedding-0.6B"
     device: str = "auto"  # "auto" -> mps/cuda/cpu

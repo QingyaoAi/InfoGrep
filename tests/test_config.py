@@ -10,6 +10,7 @@ def test_defaults_and_sidecar_paths(tmp_path: Path):
     assert cfg.manifest_path.name == "manifest.sqlite"
     assert cfg.dense.embedder == "qwen"
     assert cfg.sparse.enabled is True
+    assert cfg.dense.enabled is False  # dense is opt-in
     assert cfg.kb.enabled is False
 
 

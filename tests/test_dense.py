@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from infogrep.config import Config
 from infogrep.indexer import Indexer
@@ -9,6 +10,7 @@ from infogrep.retrieval.embedders.hashing import HashEmbedder
 
 def _dense_cfg(tmp_path):
     cfg = Config.load(tmp_path)
+    cfg.dense.enabled = True  # dense is off by default now
     cfg.dense.embedder = "hash"
     cfg.sparse.enabled = False  # isolate dense
     return cfg
@@ -53,6 +55,17 @@ def test_dense_build_and_semantic_ranking(tmp_path):
     assert top[0].score >= top[-1].score
 
     assert di.search("potassium fiber", k=1)[0].path == "banana.txt"
+
+
+def test_partial_build_is_not_treated_as_complete(tmp_path):
+    # Simulate an aborted build (e.g. OOM): a Zvec dir exists but no completion marker.
+    cfg = _dense_cfg(tmp_path)
+    cfg.dense_dir.mkdir(parents=True)
+    (cfg.dense_dir / "leftover.bin").write_bytes(b"partial")
+    di = DenseIndex(cfg)
+    assert di._exists() is False  # no embedder.json -> incomplete
+    with pytest.raises(FileNotFoundError):
+        di.search("anything", k=3)
 
 
 def test_dense_reflects_incremental_delete(tmp_path):

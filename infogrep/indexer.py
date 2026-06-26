@@ -210,7 +210,9 @@ class Indexer:
             from .retrieval.dense import DenseIndex
 
             dense = DenseIndex(cfg)
-            dense_exists = cfg.dense_dir.is_dir() and any(cfg.dense_dir.iterdir())
+            # Rebuild unless a *complete* index exists (embedder.json marks completion;
+            # a partial build from a prior crash/OOM won't have it).
+            dense_exists = (cfg.dense_dir / "embedder.json").is_file()
             if changed or not dense_exists:
                 try:
                     dense.build(manifest.iter_passages())

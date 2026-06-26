@@ -39,12 +39,14 @@ class DenseIndex:
             self._embedder = get_embedder(self.config.dense)
         return self._embedder
 
-    def _exists(self) -> bool:
-        return self.dense_dir.is_dir() and any(self.dense_dir.iterdir())
-
     @property
     def _meta_path(self):
         return self.dense_dir / "embedder.json"
+
+    def _exists(self) -> bool:
+        # The meta file is written only after a successful build, so it marks a
+        # *complete* index — a partial/aborted build (e.g. OOM) won't have it.
+        return self.dense_dir.is_dir() and self._meta_path.is_file()
 
     def _write_meta(self, name: str, dim: int) -> None:
         self._meta_path.write_text(json.dumps({"name": name, "dim": dim}))
@@ -97,6 +99,10 @@ class DenseIndex:
                 ]
                 collection.insert(docs)
                 n += len(docs)
+                # Release GPU cache between batches so RAM stays bounded on big corpora.
+                free = getattr(embedder, "_free_memory", None)
+                if free:
+                    free()
             collection.flush()
             self._write_meta(embedder.name, dim)
         finally:

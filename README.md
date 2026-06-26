@@ -32,6 +32,11 @@ infogrep schedule list | uninstall <dir>
 
 Indices live in a `<dir>/.infogrep/` side-car; original files are never modified.
 
+**Sparse** (BM25) is on by default. **Dense** (embedding) retrieval is **off by default**
+— it needs a model download and significant RAM/GPU — enable it per directory with
+`[dense] enabled = true` in `.infogrep/config.toml`. With dense off, `hybrid` simply runs
+sparse (plus the knowledge base, if enabled).
+
 ## Daily auto-reindex
 
 `infogrep schedule install <dir>` registers a macOS launchd agent that reindexes the
