@@ -86,31 +86,34 @@ class SparseIndex:
     # -- search ------------------------------------------------------------
 
     def _ensure_searcher(self):
+        # Query Lucene via Anserini's SimpleSearcher directly (through jnius), NOT
+        # pyserini's LuceneSearcher: the latter transitively imports torch +
+        # transformers (~580 MB) for neural features we don't use. This path keeps the
+        # process small (BM25 needs only the JVM).
         if self._searcher is None:
             ensure_jdk()
-            from pyserini.search.lucene import LuceneSearcher
+            from pyserini.pyclass import autoclass
 
-            if not (self.index_dir / "segments_1").exists() and not any(
-                self.index_dir.glob("segments*")
-            ):
+            if not any(self.index_dir.glob("segments*")):
                 raise FileNotFoundError(
                     f"No sparse index at {self.index_dir}. Run `infogrep index <dir>` first."
                 )
-            self._searcher = LuceneSearcher(str(self.index_dir))
+            SimpleSearcher = autoclass("io.anserini.search.SimpleSearcher")
+            self._searcher = SimpleSearcher(str(self.index_dir))
         return self._searcher
 
     def search(self, query: str, k: int = 10, prf: bool = False) -> list[Result]:
         searcher = self._ensure_searcher()
-        searcher.set_bm25()
+        # BM25 is the default similarity; only toggle RM3 PRF.
         if prf:
             searcher.set_rm3()
         else:
             searcher.unset_rm3()
 
-        hits = searcher.search(query, k=k)
+        hits = searcher.search(query, k)
         results: list[Result] = []
         for hit in hits:
-            raw = json.loads(searcher.doc(hit.docid).raw())
+            raw = json.loads(hit.lucene_document.get("raw"))
             text = raw.get("contents", "")
             results.append(
                 Result(
