@@ -51,6 +51,7 @@ def test_index_and_search_end_to_end(tmp_path):
     (tmp_path / "unrelated.txt").write_text("Bananas are a good source of potassium.")
 
     cfg = Config.load(tmp_path)
+    cfg.dense.enabled = False  # isolate sparse from the dense backend
     Indexer(cfg).reindex()
 
     sparse = SparseIndex(cfg.sparse_dir, cfg.cache_dir)
@@ -70,6 +71,7 @@ def test_search_reflects_incremental_delete(tmp_path):
     (tmp_path / "a.txt").write_text("alpha unique-token-zebra content")
     (tmp_path / "b.txt").write_text("beta other content")
     cfg = Config.load(tmp_path)
+    cfg.dense.enabled = False  # isolate sparse from the dense backend
     Indexer(cfg).reindex()
 
     sparse = SparseIndex(cfg.sparse_dir, cfg.cache_dir)

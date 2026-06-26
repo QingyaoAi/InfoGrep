@@ -79,8 +79,16 @@ def search(
         except FileNotFoundError as exc:
             typer.echo(f"[infogrep] {exc}", err=True)
             raise typer.Exit(code=2)
-    elif mode in {"dense", "kb", "hybrid"}:
-        typer.echo(f"[infogrep] mode '{mode}' is not implemented yet (dense=M3, kb=M5, hybrid=M4).")
+    elif mode == "dense":
+        from .retrieval.dense import DenseIndex
+
+        try:
+            results = DenseIndex(cfg).search(query, k=k)
+        except FileNotFoundError as exc:
+            typer.echo(f"[infogrep] {exc}", err=True)
+            raise typer.Exit(code=2)
+    elif mode in {"kb", "hybrid"}:
+        typer.echo(f"[infogrep] mode '{mode}' is not implemented yet (kb=M5, hybrid=M4).")
         raise typer.Exit(code=1)
     else:
         typer.echo(f"[infogrep] unknown mode: {mode}", err=True)

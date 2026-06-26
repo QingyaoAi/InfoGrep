@@ -170,3 +170,14 @@ class Indexer:
                     sparse.build(manifest.iter_passages())
                 except Exception as exc:  # never let JVM/index issues lose the manifest
                     report.errors.append(f"sparse index: {exc}")
+
+        if cfg.dense.enabled:
+            from .retrieval.dense import DenseIndex
+
+            dense = DenseIndex(cfg)
+            dense_exists = cfg.dense_dir.is_dir() and any(cfg.dense_dir.iterdir())
+            if changed or not dense_exists:
+                try:
+                    dense.build(manifest.iter_passages())
+                except Exception as exc:  # embedding/Zvec issues shouldn't lose the manifest
+                    report.errors.append(f"dense index: {exc}")

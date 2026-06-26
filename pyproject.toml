@@ -13,6 +13,8 @@ dependencies = [
     "python-pptx>=1.0.2",
     "pathspec>=1.1.1",
     "pyserini>=1.2.0",
+    "zvec>=0.5.1",
+    "sentence-transformers>=5.6.0",
 ]
 
 # Heavy, milestone-specific deps are added later via `uv add`:

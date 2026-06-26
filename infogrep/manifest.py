@@ -166,6 +166,18 @@ class Manifest:
     def count_passages(self) -> int:
         return self._conn.execute("SELECT COUNT(*) AS c FROM passages").fetchone()["c"]
 
+    def get_passages_by_ids(self, passage_ids: list[str]) -> dict[str, sqlite3.Row]:
+        """Look up passage rows by id (for enriching retriever hits with metadata)."""
+        out: dict[str, sqlite3.Row] = {}
+        for i in range(0, len(passage_ids), 500):
+            batch = passage_ids[i : i + 500]
+            placeholders = ",".join("?" * len(batch))
+            for row in self._conn.execute(
+                f"SELECT * FROM passages WHERE passage_id IN ({placeholders})", batch
+            ):
+                out[row["passage_id"]] = row
+        return out
+
     # -- stats -------------------------------------------------------------
 
     def stats(self) -> dict:

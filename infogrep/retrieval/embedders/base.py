@@ -12,6 +12,10 @@ class Embedder(Protocol):
     name: str
     dim: int
 
-    def embed(self, texts: list[str]):  # -> np.ndarray  (M3)
-        """Embed a batch of texts into an (len(texts), dim) array."""
+    def embed(self, texts: list[str], is_query: bool = False):  # -> np.ndarray
+        """Embed a batch of texts into an (len(texts), dim) float32 array.
+
+        ``is_query`` lets instruction-tuned models (e.g. Qwen3-Embedding) apply a
+        query-side prompt; document-style embedders can ignore it.
+        """
         ...

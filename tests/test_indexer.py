@@ -4,6 +4,14 @@ from infogrep.config import Config
 from infogrep.indexer import Indexer
 
 
+def _cfg(tmp_path):
+    """M1 tests exercise manifest/change-detection only — skip the heavy backends."""
+    cfg = Config.load(tmp_path)
+    cfg.sparse.enabled = False
+    cfg.dense.enabled = False
+    return cfg
+
+
 def _corpus(root):
     (root / "notes.md").write_text("# Title\n\nThe quick brown fox jumps over the lazy dog.")
     (root / "readme.txt").write_text("InfoGrep indexes local files for coding agents.")
@@ -13,7 +21,7 @@ def _corpus(root):
 
 def test_index_then_noop_then_change(tmp_path):
     _corpus(tmp_path)
-    idx = Indexer(Config.load(tmp_path))
+    idx = Indexer(_cfg(tmp_path))
 
     # First run: everything is added; passages produced.
     r1 = idx.reindex()
@@ -45,7 +53,7 @@ def test_index_then_noop_then_change(tmp_path):
 
 def test_full_reindex_reprocesses_all(tmp_path):
     _corpus(tmp_path)
-    idx = Indexer(Config.load(tmp_path))
+    idx = Indexer(_cfg(tmp_path))
     idx.reindex()
     r = idx.reindex(full=True)
     assert r.modified == 3 and r.unchanged == 0
@@ -53,7 +61,7 @@ def test_full_reindex_reprocesses_all(tmp_path):
 
 def test_status_reflects_index(tmp_path):
     _corpus(tmp_path)
-    cfg = Config.load(tmp_path)
+    cfg = _cfg(tmp_path)
     assert Indexer(cfg).status() == {"indexed": False}
     Indexer(cfg).reindex()
     info = Indexer(cfg).status()
