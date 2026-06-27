@@ -41,7 +41,11 @@ class SearchEngine:
         if self._sparse is None:
             from .retrieval.sparse import SparseIndex
 
-            self._sparse = SparseIndex(self.config.sparse_dir, self.config.cache_dir)
+            self._sparse = SparseIndex(
+                self.config.sparse_dir,
+                self.config.cache_dir,
+                field_boosts=self.config.sparse.field_boosts,
+            )
         return self._sparse
 
     @property

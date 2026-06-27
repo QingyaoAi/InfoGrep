@@ -9,17 +9,19 @@ from infogrep.retrieval.sparse import SparseIndex, _row_to_json
 
 def test_row_to_json_shape():
     row = {
-        "passage_id": "a.txt#0",
+        "passage_id": "docs/a.txt#0",
         "text": "hello world",
-        "path": "a.txt",
+        "path": "docs/a.txt",
         "page": 3,
         "offset": 0,
     }
     out = json.loads(_row_to_json(row))
     assert out == {
-        "id": "a.txt#0",
+        "id": "docs/a.txt#0",
         "contents": "hello world",
-        "path": "a.txt",
+        "filename": "a txt",  # tokenized basename (searchable)
+        "pathtext": "docs a txt",  # tokenized path (searchable)
+        "path": "docs/a.txt",  # real path (stored for citation)
         "page": 3,
         "offset": 0,
     }
@@ -44,6 +46,39 @@ pytestmark_integration = pytest.mark.skipif(
 
 def _passage(pid, text, path):
     return {"passage_id": pid, "text": text, "path": path, "page": None, "offset": 0}
+
+
+@pytestmark_integration
+def test_multifield_matches_filename_and_path(tmp_path):
+    from infogrep.retrieval.sparse import SparseIndex
+
+    si = SparseIndex(tmp_path / "sparse", tmp_path / "cache")
+    si.build(iter([
+        # The word "introduction" is in the FILENAME, not the passage text.
+        _passage("introduction.tex#0", "we present a new ranking model", "papers/introduction.tex"),
+        # "neural" only appears in the PATH directory.
+        _passage("m.tex#0", "experimental results and analysis", "neural/m.tex"),
+        _passage("other.txt#0", "completely unrelated grocery list", "misc/other.txt"),
+    ]))
+
+    # Match by filename token.
+    assert si.search("introduction", k=5)[0].path == "papers/introduction.tex"
+    # Match by path component.
+    assert si.search("neural", k=5)[0].path == "neural/m.tex"
+    # Content still matches.
+    assert si.search("ranking model", k=5)[0].path == "papers/introduction.tex"
+
+
+@pytestmark_integration
+def test_multifield_works_after_incremental_add(tmp_path):
+    from infogrep.retrieval.sparse import SparseIndex
+
+    si = SparseIndex(tmp_path / "sparse", tmp_path / "cache")
+    si.build(iter([_passage("a.txt#0", "first document body", "a.txt")]))
+    si.update(removed_ids=set(),
+              added_passages=iter([_passage("budget_report.pdf#0", "quarterly figures", "finance/budget_report.pdf")]))
+    # Incrementally-added doc is findable by its filename token.
+    assert si.search("budget", k=5)[0].path == "finance/budget_report.pdf"
 
 
 @pytestmark_integration

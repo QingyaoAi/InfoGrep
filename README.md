@@ -33,6 +33,11 @@ infogrep schedule list | uninstall <dir>
 
 Indices live in a `<dir>/.infogrep/` side-car; original files are never modified.
 
+Sparse search is **multi-field**: it matches the query against the passage text *and*
+the file name and path (tokenized), with configurable boosts (`[sparse] field_boosts`),
+so you can find a file by its name/path, not only its contents. Results always include
+the original absolute path and file metadata (`abs_path`, `filename`, `ext`, `size`, `mtime`).
+
 **Sparse** (BM25) is on by default. **Dense** (embedding) retrieval is **off by default**
 — it needs a model download and significant RAM/GPU — enable it per directory with
 `[dense] enabled = true` in `.infogrep/config.toml`. With dense off, `hybrid` simply runs
