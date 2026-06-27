@@ -1,8 +1,15 @@
-"""Sparse retriever backed by Pyserini (Lucene BM25, optional RM3 PRF).
+"""Sparse retriever backed by Anserini/Lucene (BM25, optional RM3 PRF).
 
-The Lucene index is built from passages streamed out of the manifest (the single source
-of truth from M1). Indexing shells out to ``pyserini.index.lucene`` so the heavy JVM work
-runs in a child process; search uses an in-process ``LuceneSearcher``.
+Full (re)build shells out to ``pyserini.index.lucene`` (the batch indexer) in a child
+process. Incremental updates and search run in-process via jnius against Lucene/Anserini
+Java classes directly — avoiding pyserini's Python wrapper, which imports torch (~580 MB).
+
+Incremental updates open a Lucene ``IndexWriter`` on the existing index and reproduce
+Anserini's exact field layout so updated docs are byte-compatible with batch-built ones:
+  - ``id``        StringField (stored, exact term) — enables delete-by-term
+  - ``contents``  indexed DOCS_AND_FREQS_AND_POSITIONS + term vectors, not stored
+  - ``raw``       StoredField (the JSON record), not indexed
+analyzed with Anserini's ``DefaultEnglishAnalyzer`` (Porter), the same as the batch path.
 """
 
 from __future__ import annotations
@@ -81,6 +88,81 @@ class SparseIndex:
                 f"pyserini indexing failed (exit {proc.returncode}):\n{proc.stderr[-2000:]}"
             )
         self._searcher = None  # force reopen against the fresh index
+        return n
+
+    # -- incremental update ------------------------------------------------
+
+    def update(self, removed_ids, added_passages) -> int:
+        """Apply a passage delta to the existing index via Lucene IndexWriter (no rebuild).
+
+        Deletes ``removed_ids`` then upserts ``added_passages``. Order matters: all deletes
+        run first so that re-added (modified) passages, appended afterwards, survive.
+        """
+        ensure_jdk()
+        from jnius import cast
+        from pyserini.pyclass import autoclass
+
+        Analyzer = autoclass("io.anserini.analysis.DefaultEnglishAnalyzer")
+        FSDirectory = autoclass("org.apache.lucene.store.FSDirectory")
+        Paths = autoclass("java.nio.file.Paths")
+        IndexWriter = autoclass("org.apache.lucene.index.IndexWriter")
+        IndexWriterConfig = autoclass("org.apache.lucene.index.IndexWriterConfig")
+        OpenMode = autoclass("org.apache.lucene.index.IndexWriterConfig$OpenMode")
+        FieldType = autoclass("org.apache.lucene.document.FieldType")
+        IndexOptions = autoclass("org.apache.lucene.index.IndexOptions")
+        Document = autoclass("org.apache.lucene.document.Document")
+        StringField = autoclass("org.apache.lucene.document.StringField")
+        StoredField = autoclass("org.apache.lucene.document.StoredField")
+        BinaryDocValuesField = autoclass("org.apache.lucene.document.BinaryDocValuesField")
+        BytesRef = autoclass("org.apache.lucene.util.BytesRef")
+        Field = autoclass("org.apache.lucene.document.Field")
+        Store = autoclass("org.apache.lucene.document.Field$Store")
+        Term = autoclass("org.apache.lucene.index.Term")
+        TermQuery = autoclass("org.apache.lucene.search.TermQuery")
+        JString = autoclass("java.lang.String")
+
+        def delete(pid: str):
+            # Delete-by-id. Use a TermQuery (not a bare Term): jnius can't disambiguate
+            # IndexWriter.deleteDocuments(Term...) from (Query...), but a TermQuery is
+            # unambiguously a Query.
+            writer.deleteDocuments(TermQuery(Term("id", pid)))
+
+        def charseq(s: str):
+            # jnius can't pick Field's CharSequence ctor from a python str; wrap explicitly.
+            return cast("java.lang.CharSequence", JString(s.encode("utf-8"), "UTF-8"))
+
+        # Field layout matching Anserini's DefaultLuceneDocumentGenerator (see module docstring).
+        contents_type = FieldType()
+        contents_type.setIndexOptions(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS)
+        contents_type.setStoreTermVectors(True)  # needed for RM3 PRF
+        contents_type.setTokenized(True)
+        contents_type.setStored(False)
+        contents_type.freeze()
+
+        config = IndexWriterConfig(Analyzer.newDefaultInstance())
+        config.setOpenMode(OpenMode.CREATE_OR_APPEND)
+        writer = IndexWriter(FSDirectory.open(Paths.get(str(self.index_dir))), config)
+        try:
+            # Deletes first (removed + modified-old ids) so re-added passages, appended
+            # afterwards, survive.
+            for pid in removed_ids:
+                delete(pid)
+            n = 0
+            for row in added_passages:
+                pid = row["passage_id"]
+                delete(pid)  # idempotent: dedupe against any existing doc with this id
+                doc = Document()
+                # Match Anserini's field layout exactly (id has BINARY doc values).
+                doc.add(StringField("id", pid, Store.YES))
+                doc.add(BinaryDocValuesField("id", BytesRef(charseq(pid))))
+                doc.add(Field("contents", charseq(row["text"]), contents_type))
+                doc.add(StoredField("raw", _row_to_json(row)))
+                writer.addDocument(doc)
+                n += 1
+            writer.commit()
+        finally:
+            writer.close()
+        self._searcher = None  # force reopen against the updated index
         return n
 
     # -- search ------------------------------------------------------------

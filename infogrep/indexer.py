@@ -223,12 +223,16 @@ class Indexer:
             from .retrieval.sparse import SparseIndex
 
             sparse = SparseIndex(cfg.sparse_dir, cfg.cache_dir)
+            # A committed Lucene index has a segments_N file; a crashed build won't.
             index_exists = cfg.sparse_dir.is_dir() and any(cfg.sparse_dir.glob("segments*"))
-            if changed or not index_exists:
-                try:
-                    sparse.build(manifest.iter_passages())
-                except Exception as exc:  # never let JVM/index issues lose the manifest
-                    report.errors.append(f"sparse index: {exc}")
+            try:
+                if full or not index_exists:
+                    if changed or not index_exists:
+                        sparse.build(manifest.iter_passages())
+                elif removed_ids or changed_paths:
+                    sparse.update(removed_ids, manifest.passages_for_paths(changed_paths))
+            except Exception as exc:  # never let JVM/index issues lose the manifest
+                report.errors.append(f"sparse index: {exc}")
 
         if cfg.dense.enabled:
             from .retrieval.dense import DenseIndex
