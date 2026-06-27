@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .config import Config
-from .retrieval.base import Result
+from .retrieval.base import Result, with_file_metadata
 from .retrieval.fusion import reciprocal_rank_fusion
 
 # Per-retriever candidate pool size for fusion (>= k so RRF has material to work with).
@@ -62,14 +62,21 @@ class SearchEngine:
 
     # -- individual retrievers --------------------------------------------
 
+    def _enrich(self, results: list[Result], root) -> list[Result]:
+        """Attach the original file path + metadata to each result."""
+        return [with_file_metadata(r, root) for r in results]
+
     def search_sparse(self, query: str, k: int = 10, prf: bool = False) -> list[Result]:
-        return self.sparse.search(query, k=k, prf=prf)
+        # Content-file retrievers: paths are relative to the indexed directory.
+        return self._enrich(self.sparse.search(query, k=k, prf=prf), self.config.target_dir)
 
     def search_dense(self, query: str, k: int = 10) -> list[Result]:
-        return self.dense.search(query, k=k)
+        return self._enrich(self.dense.search(query, k=k), self.config.target_dir)
 
     def search_kb(self, query: str, k: int = 10) -> list[Result]:
-        return self.kb.search(query, k=k)
+        # KB paths are vault-relative; we have the vault name (CLI target), not its
+        # filesystem root, so set filename/ext only (root=None leaves abs_path unset).
+        return self._enrich(self.kb.search(query, k=k), None)
 
     def _run(self, name: str, query: str, k: int, prf: bool) -> list[Result]:
         if name == "sparse":

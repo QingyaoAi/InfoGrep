@@ -94,9 +94,11 @@ async function search(ev){
     $('meta').textContent=m;
     for(const h of r.results){
       const card=el('div','hit'); const top=el('div','top');
-      top.appendChild(el('span','path', h.path + (h.page!=null?(' · p.'+h.page):'')));
+      const ref=(h.abs_path||h.path)+(h.page!=null?(' · p.'+h.page):'');
+      top.appendChild(el('span','path', ref));
       top.appendChild(el('span','score','['+Number(h.score).toFixed(3)+']'));
       top.appendChild(el('span','badge', h.retriever));
+      if(h.ext) top.appendChild(el('span','badge', h.ext));
       card.appendChild(top); card.appendChild(el('div','snip', (h.snippet||'').trim()));
       $('results').appendChild(card);
     }

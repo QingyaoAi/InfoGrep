@@ -98,7 +98,8 @@ def search(
         typer.echo("[infogrep] no results.")
         return
     for i, r in enumerate(results, start=1):
-        loc = f"{r.path}" + (f" p.{r.page}" if r.page is not None else "")
+        file_ref = r.abs_path or r.path  # original file path when known
+        loc = file_ref + (f" p.{r.page}" if r.page is not None else "")
         typer.echo(f"{i:2}. [{r.score:.3f}] {loc}  ({r.retriever})")
         typer.echo(f"    {r.snippet.strip()[:160]}")
 

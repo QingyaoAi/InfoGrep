@@ -6,6 +6,8 @@ RRF needs no score normalization or tuning: each result contributes
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .base import Result
 
 
@@ -30,19 +32,8 @@ def reciprocal_rank_fusion(
                 best[key] = res
 
     ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    fused: list[Result] = []
-    for key, fused_score in ordered[:top_n]:
-        src = best[key]
-        fused.append(
-            Result(
-                doc_id=src.doc_id,
-                passage_id=src.passage_id,
-                path=src.path,
-                snippet=src.snippet,
-                score=fused_score,
-                retriever="hybrid",
-                page=src.page,
-                offset=src.offset,
-            )
-        )
-    return fused
+    # replace() keeps all fields (incl. file metadata), overriding only score/retriever.
+    return [
+        replace(best[key], score=fused_score, retriever="hybrid")
+        for key, fused_score in ordered[:top_n]
+    ]
