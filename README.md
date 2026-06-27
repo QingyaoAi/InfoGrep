@@ -26,6 +26,7 @@ infogrep search <query> -d <dir>     # query (modes: hybrid [default] | sparse |
 infogrep search <query> --prf        # sparse query expansion (RM3)
 infogrep status <dir>                 # show index status + staleness (pending changes)
 infogrep mcp --dir <dir>             # run the MCP server (stdio) for coding agents
+infogrep serve --dir <dir>          # browser UI to test search (http://127.0.0.1:7421)
 infogrep schedule install <dir> --at 03:00   # daily auto-reindex via launchd
 infogrep schedule list | uninstall <dir>
 ```
@@ -54,6 +55,13 @@ Enable per directory in `.infogrep/config.toml`:
 ocr = true          # OCR pages with little/no extractable text
 ocr_min_chars = 16  # threshold below which a page is OCR'd
 ```
+
+## Browser UI
+
+`infogrep serve --dir <dir>` starts a small local web UI (default
+`http://127.0.0.1:7421`, an uncommon port; override with `--port`) for testing search by
+hand — a search box, a mode selector (hybrid/sparse/dense/kb), result snippets with
+path/page/score, and a JSON API at `/api/search` and `/api/status`. Bound to localhost.
 
 ## MCP server (Claude Code / Codex)
 

@@ -144,6 +144,18 @@ def mcp(
     serve(directory=str(Path(directory).expanduser().resolve()))
 
 
+@app.command()
+def serve(
+    directory: Path = typer.Option(Path.cwd(), "--dir", "-d", help="Indexed directory to search."),
+    port: int = typer.Option(7421, "--port", "-p", help="Port (uncommon by default)."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind host (localhost by default)."),
+) -> None:
+    """Run a local web UI to test search in a browser."""
+    from .web import serve as run_web
+
+    run_web(directory=directory, host=host, port=port)
+
+
 schedule_app = typer.Typer(help="Manage daily auto-reindex (macOS launchd).")
 app.add_typer(schedule_app, name="schedule")
 
