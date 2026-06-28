@@ -57,9 +57,9 @@ def _legal_paper(root):
     doc.save(str(root / "acmart.pdf"))
     doc.close()
 
-    # Non-content files that must be skipped (not indexed).
+    # Non-content files: no text extracted, but still indexed by name/path (stub).
     (root / "figure.png").write_bytes(b"\x89PNG\r\n\x1a\n notarealimage")
-    (root / "refs.bib").write_text("@article{x, title={Legal IR}}")  # .bib unsupported
+    (root / "refs.bib").write_text("@article{x, title={Legal IR}}")
     (root / "acmart.cls").write_text("% latex class file")
 
 
@@ -69,10 +69,10 @@ def test_index_and_query_legal_corpus(tmp_path):
     cfg = Config.load(tmp_path)  # default: sparse on, dense off, kb off
 
     report = Indexer(cfg).reindex()
-    # 3 .tex + 1 .txt + 1 .pdf indexed; .png/.bib/.cls skipped.
-    assert report.added == 5
-    assert report.skipped == 3
-    assert report.n_passages >= 5
+    # 5 with content (3 .tex + .txt + .pdf) + 3 name-only (.png/.bib/.cls) = 8 files.
+    assert report.added == 8
+    assert report.name_only == 3
+    assert report.n_passages >= 8
     assert not report.errors
 
     engine = SearchEngine(cfg)
@@ -115,7 +115,7 @@ def test_incremental_update_on_legal_corpus(tmp_path):
     # Second run with no changes is a no-op.
     r2 = Indexer(cfg).reindex()
     assert (r2.added, r2.modified, r2.deleted) == (0, 0, 0)
-    assert r2.unchanged == 5
+    assert r2.unchanged == 8
 
     # Edit one source -> exactly one modified, and search reflects new content.
     (tmp_path / "7conclusion.tex").write_text(

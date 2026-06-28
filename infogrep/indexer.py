@@ -8,6 +8,7 @@ backends will read from.
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 from .config import Config
 from .ingest.chunker import chunk_pages
 from .ingest.extract.registry import extract, is_supported
+from .ingest.types import Passage
 from .ingest.walker import walk
 from .manifest import Manifest
 
@@ -37,7 +39,7 @@ class IndexReport:
     modified: int = 0
     deleted: int = 0
     unchanged: int = 0
-    skipped: int = 0  # unsupported file types
+    name_only: int = 0  # indexed by file name/path only (no extractable content)
     n_files: int = 0
     n_passages: int = 0
     errors: list[str] = field(default_factory=list)
@@ -66,10 +68,6 @@ class Indexer:
 
             for abs_path, rel in walk(cfg):
                 seen.add(rel)
-                if not is_supported(abs_path):
-                    report.skipped += 1
-                    continue
-
                 try:
                     stat = abs_path.stat()
                 except OSError as exc:
@@ -83,10 +81,16 @@ class Indexer:
                     continue
 
                 try:
-                    passages = self._build_passages(abs_path, rel)
+                    passages = self._build_passages(abs_path, rel) if is_supported(abs_path) else []
                 except Exception as exc:  # extractor failure shouldn't abort the run
                     report.errors.append(f"{rel}: {exc}")
-                    continue
+                    passages = []
+
+                # Files with no extractable content are still indexed by name/path
+                # (a single empty-content stub passage), so they're findable by filename.
+                if not passages:
+                    passages = [self._stub_passage(rel)]
+                    report.name_only += 1
 
                 if change == "modified":
                     # Capture old passage ids before they're replaced, so the backends
@@ -191,6 +195,19 @@ class Indexer:
         if abs_path not in cache:
             cache[abs_path] = _hash_file(abs_path)
         return cache[abs_path]
+
+    @staticmethod
+    def _stub_passage(rel: str) -> Passage:
+        """A passage for a file with no extractable text, so it's still searchable.
+
+        Its content is the path tokens (e.g. "data archive zebra bin"): this keeps the
+        file findable by name/path and avoids an empty ``contents`` field, which the
+        Anserini batch indexer drops.
+        """
+        text = re.sub(r"[/\\._\-]+", " ", rel).strip()
+        return Passage(
+            passage_id=f"{rel}#0", doc_id=rel, path=rel, ordinal=0, text=text, page=None, offset=0
+        )
 
     def _build_passages(self, abs_path: Path, rel: str):
         pages = extract(

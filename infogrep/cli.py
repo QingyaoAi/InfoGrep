@@ -53,7 +53,7 @@ def index(
     typer.echo(
         "[infogrep] "
         f"added={report.added} modified={report.modified} deleted={report.deleted} "
-        f"unchanged={report.unchanged} skipped={report.skipped}"
+        f"unchanged={report.unchanged} name_only={report.name_only}"
     )
     typer.echo(f"[infogrep] index now holds {report.n_files} files, {report.n_passages} passages")
     for err in report.errors:
