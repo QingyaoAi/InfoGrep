@@ -1,15 +1,16 @@
 """Sparse retriever backed by Anserini/Lucene (BM25, optional RM3 PRF).
 
-Full (re)build shells out to ``pyserini.index.lucene`` (the batch indexer) in a child
-process. Incremental updates and search run in-process via jnius against Lucene/Anserini
-Java classes directly — avoiding pyserini's Python wrapper, which imports torch (~580 MB).
+Both full build and incremental update run in-process via jnius against Lucene Java
+classes directly (avoiding pyserini's Python wrapper, which imports torch ~580 MB). Going
+through ``IndexWriter`` ourselves lets us use any analyzer — including the composite
+English+CJK default that the batch ``pyserini.index.lucene`` tool can't express.
 
-Incremental updates open a Lucene ``IndexWriter`` on the existing index and reproduce
-Anserini's exact field layout so updated docs are byte-compatible with batch-built ones:
-  - ``id``        StringField (stored, exact term) — enables delete-by-term
-  - ``contents``  indexed DOCS_AND_FREQS_AND_POSITIONS + term vectors, not stored
-  - ``raw``       StoredField (the JSON record), not indexed
-analyzed with Anserini's ``DefaultEnglishAnalyzer`` (Porter), the same as the batch path.
+Documents are multi-field, reproducing Anserini's field layout:
+  - ``id``                       StringField + BinaryDocValuesField (delete-by-term)
+  - ``contents``/``filename``/``pathtext``  indexed with positions + term vectors, not stored
+  - ``raw``                      StoredField (the JSON record), not indexed
+See :func:`make_analyzer` for the analyzer per language. Search uses an in-process
+``SimpleSearcher`` with the matching analyzer.
 """
 
 from __future__ import annotations
@@ -17,8 +18,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -47,10 +46,24 @@ def _tokenize_path(s: str) -> str:
 
 
 def make_analyzer(language: str):
-    """Lucene analyzer for a language: DefaultEnglishAnalyzer for 'en', else the
-    Anserini language-specific analyzer (CJKAnalyzer bigrams for zh/ja/ko)."""
+    """Lucene analyzer for a ``language`` code:
+
+    - ``"en+zh"`` (default): a composite that does English Porter stemming AND CJK
+      bigrams, so mixed English/Chinese (and Japanese/Korean) corpora work well.
+      ``retrieving`` -> ``retriev`` and ``信息检索`` -> ``信息/息检/检索``.
+    - ``"en"``: Anserini's DefaultEnglishAnalyzer (English only, Porter).
+    - ``"zh"``/``"ja"``/``"ko"`` (single CJK): Anserini's CJKAnalyzer (bigrams).
+    """
     from pyserini.pyclass import autoclass
 
+    if "+" in language or language in ("multi", "cjk"):
+        # standard tokenizer -> lowercase -> CJK bigrams (CJK only) -> Porter (Latin only)
+        builder = autoclass("org.apache.lucene.analysis.custom.CustomAnalyzer").builder()
+        builder.withTokenizer("standard")
+        builder.addTokenFilter("lowercase")
+        builder.addTokenFilter("cjkBigram")
+        builder.addTokenFilter("porterStem")
+        return builder.build()
     if language and language != "en":
         return autoclass("io.anserini.analysis.AnalyzerMap").getLanguageSpecificAnalyzer(language)
     return autoclass("io.anserini.analysis.DefaultEnglishAnalyzer").newDefaultInstance()
@@ -86,7 +99,7 @@ class SparseIndex:
         index_dir: Path,
         cache_dir: Path,
         field_boosts: dict | None = None,
-        language: str = "en",
+        language: str = "en+zh",
     ):
         self.index_dir = index_dir
         self.cache_dir = cache_dir
@@ -103,63 +116,43 @@ class SparseIndex:
         p = self._lang_marker
         return p.read_text().strip() if p.is_file() else "en"
 
-    # -- build -------------------------------------------------------------
+    # -- build / incremental update ---------------------------------------
+    #
+    # Both go through a Lucene IndexWriter via jnius (torch-free, in-process), so any
+    # analyzer can be used -- including the composite English+CJK default, which the
+    # batch `pyserini.index.lucene` tool can't express (it only takes -language).
+    # Documents reproduce Anserini's field schema exactly:
+    #   id       StringField + BinaryDocValuesField (BINARY doc values)
+    #   contents/filename/pathtext  DOCS_AND_FREQS_AND_POSITIONS + term vectors, not stored
+    #   raw      StoredField
 
     def build(self, passages: Iterable) -> int:
-        """(Re)build the index from a stream of manifest passage Rows. Returns doc count."""
-        ensure_jdk()
-        collection_dir = self.cache_dir / "sparse_collection"
-        collection_dir.mkdir(parents=True, exist_ok=True)
-        docs_file = collection_dir / "docs.jsonl"
-
-        n = 0
-        with docs_file.open("w", encoding="utf-8") as fh:
-            for row in passages:
-                fh.write(_row_to_json(row))
-                fh.write("\n")
-                n += 1
-
-        # Rebuild cleanly: Lucene won't append into an existing populated index dir here.
+        """(Re)build the whole index from a stream of manifest passage Rows."""
         if self.index_dir.exists():
             shutil.rmtree(self.index_dir)
         self.index_dir.mkdir(parents=True, exist_ok=True)
-
-        # Anserini-style single-dash options.
-        cmd = [
-            sys.executable, "-m", "pyserini.index.lucene",
-            "-collection", "JsonCollection",
-            "-input", str(collection_dir),
-            "-index", str(self.index_dir),
-            "-generator", "DefaultLuceneDocumentGenerator",
-            "-threads", "4",
-            "-language", self.language,
-            "-storePositions", "-storeDocvectors", "-storeRaw",
-            "-fields", *META_FIELDS,  # index filename + path as searchable fields
-        ]
-        # Capture Lucene's verbose INFO logging; only surface it if indexing fails.
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"pyserini indexing failed (exit {proc.returncode}):\n{proc.stderr[-2000:]}"
-            )
-        self._lang_marker.write_text(self.language)  # record analyzer language
-        self._searcher = None  # force reopen against the fresh index
-        return n
-
-    # -- incremental update ------------------------------------------------
+        return self._write(passages, removed_ids=(), create=True)
 
     def update(self, removed_ids, added_passages) -> int:
-        """Apply a passage delta to the existing index via Lucene IndexWriter (no rebuild).
+        """Apply a passage delta to the existing index (no rebuild).
 
-        Deletes ``removed_ids`` then upserts ``added_passages``. Order matters: all deletes
-        run first so that re-added (modified) passages, appended afterwards, survive.
+        Deletes ``removed_ids`` then upserts ``added_passages``; deletes run first so
+        re-added (modified) passages, appended afterwards, survive.
         """
-        ensure_jdk()
-        from jnius import cast
-        from pyserini.pyclass import autoclass
+        return self._write(added_passages, removed_ids=removed_ids, create=False)
 
-        # Use the analyzer the index was built with, so new docs tokenize consistently.
-        analyzer = make_analyzer(self.built_language())
+    def _write(self, passages: Iterable, removed_ids, create: bool) -> int:
+        ensure_jdk()
+        # Import pyserini.pyclass BEFORE jnius so it configures the full Anserini
+        # classpath before the JVM starts (otherwise classes like CustomAnalyzer,
+        # used by the en+zh analyzer, aren't found).
+        from pyserini.pyclass import autoclass
+        from jnius import cast
+
+        # Build mode uses the configured language; incremental must match the existing index.
+        language = self.language if create else self.built_language()
+        analyzer = make_analyzer(language)
+
         FSDirectory = autoclass("org.apache.lucene.store.FSDirectory")
         Paths = autoclass("java.nio.file.Paths")
         IndexWriter = autoclass("org.apache.lucene.index.IndexWriter")
@@ -179,16 +172,14 @@ class SparseIndex:
         JString = autoclass("java.lang.String")
 
         def delete(pid: str):
-            # Delete-by-id. Use a TermQuery (not a bare Term): jnius can't disambiguate
-            # IndexWriter.deleteDocuments(Term...) from (Query...), but a TermQuery is
-            # unambiguously a Query.
+            # jnius can't disambiguate deleteDocuments(Term...) from (Query...);
+            # a TermQuery is unambiguously a Query.
             writer.deleteDocuments(TermQuery(Term("id", pid)))
 
         def charseq(s: str):
             # jnius can't pick Field's CharSequence ctor from a python str; wrap explicitly.
             return cast("java.lang.CharSequence", JString(s.encode("utf-8"), "UTF-8"))
 
-        # Field layout matching Anserini's DefaultLuceneDocumentGenerator (see module docstring).
         contents_type = FieldType()
         contents_type.setIndexOptions(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS)
         contents_type.setStoreTermVectors(True)  # needed for RM3 PRF
@@ -197,20 +188,17 @@ class SparseIndex:
         contents_type.freeze()
 
         config = IndexWriterConfig(analyzer)
-        config.setOpenMode(OpenMode.CREATE_OR_APPEND)
+        config.setOpenMode(OpenMode.CREATE if create else OpenMode.CREATE_OR_APPEND)
         writer = IndexWriter(FSDirectory.open(Paths.get(str(self.index_dir))), config)
         try:
-            # Deletes first (removed + modified-old ids) so re-added passages, appended
-            # afterwards, survive.
             for pid in removed_ids:
                 delete(pid)
             n = 0
-            for row in added_passages:
+            for row in passages:
                 pid = row["passage_id"]
-                delete(pid)  # idempotent: dedupe against any existing doc with this id
+                if not create:
+                    delete(pid)  # dedupe against any existing doc with this id
                 doc = Document()
-                # Match Anserini's field layout exactly (id has BINARY doc values;
-                # filename/path use the same FieldType as contents).
                 doc.add(StringField("id", pid, Store.YES))
                 doc.add(BinaryDocValuesField("id", BytesRef(charseq(pid))))
                 doc.add(Field("contents", charseq(row["text"]), contents_type))
@@ -222,6 +210,7 @@ class SparseIndex:
             writer.commit()
         finally:
             writer.close()
+        self._lang_marker.write_text(language)
         self._searcher = None  # force reopen against the updated index
         return n
 
@@ -243,9 +232,7 @@ class SparseIndex:
             SimpleSearcher = autoclass("io.anserini.search.SimpleSearcher")
             self._searcher = SimpleSearcher(str(self.index_dir))
             # Parse queries with the same analyzer the index was built with.
-            lang = self.built_language()
-            if lang != "en":
-                self._searcher.set_language(lang)
+            self._searcher.set_analyzer(make_analyzer(self.built_language()))
         return self._searcher
 
     def _fields_map(self):

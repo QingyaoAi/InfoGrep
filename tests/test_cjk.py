@@ -41,6 +41,53 @@ def _passage(pid, text, path):
 
 
 @needs_sparse
+def test_default_composite_handles_english_and_chinese(tmp_path):
+    # The default "en+zh" analyzer: English Porter stemming AND CJK bigrams in one index.
+    si = SparseIndex(tmp_path / "sparse", tmp_path / "cache")  # default language
+    assert si.language == "en+zh"
+    si.build(iter([
+        _passage("en#0", "retrieving relevant legal documents", "english.txt"),
+        _passage("zh#0", "信息检索与结果多样性", "chinese.txt"),
+    ]))
+    assert si.built_language() == "en+zh"
+
+    # English: query 'retrieval' matches the stemmed 'retrieving'.
+    assert si.search("retrieval", k=3)[0].path == "english.txt"
+    # Chinese: bigram match.
+    assert si.search("信息检索", k=3)[0].path == "chinese.txt"
+    # Mixed query works too.
+    paths = {h.path for h in si.search("legal 多样性", k=5)}
+    assert "english.txt" in paths and "chinese.txt" in paths
+
+
+@needs_sparse
+def test_en_zh_builds_in_cold_process(tmp_path):
+    # Regression: the en+zh analyzer uses Lucene CustomAnalyzer, which is only on the
+    # classpath if pyserini.pyclass is imported before jnius. pytest masks this (another
+    # test imports pyserini.search.lucene), so build in a FRESH process to catch it.
+    import subprocess
+    import sys
+    import textwrap
+
+    (tmp_path / "a.txt").write_text("retrieving relevant 信息检索 documents")
+    script = textwrap.dedent(f"""
+        from infogrep.config import Config
+        from infogrep.indexer import Indexer
+        from infogrep.engine import SearchEngine
+        cfg = Config.load({str(tmp_path)!r})
+        cfg.dense.enabled = False
+        rep = Indexer(cfg).reindex()
+        assert not rep.errors, rep.errors
+        e = SearchEngine(cfg)
+        assert e.search_sparse("retrieval", 3)   # English (stemmed)
+        assert e.search_sparse("信息检索", 3)      # Chinese (bigrams)
+        print("COLD_OK")
+    """)
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert "COLD_OK" in r.stdout, (r.stdout + r.stderr)[-2000:]
+
+
+@needs_sparse
 def test_cjk_search_matches_substring_phrase(tmp_path):
     # With the CJK (bigram) analyzer, a multi-char query matches docs sharing those
     # characters. Build two zh indexes and confirm the right doc ranks first.

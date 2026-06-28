@@ -55,9 +55,10 @@ class SparseConfig:
 
     enabled: bool = True
     prf: bool = False  # RM3 pseudo-relevance feedback, off by default
-    # Analyzer language (ISO code). "en" = English+Porter; "zh"/"ja"/"ko" = CJK
-    # (bigram) analysis, better for Chinese/Japanese/Korean. Changing it re-indexes.
-    language: str = "en"
+    # Analyzer language. Default "en+zh" handles English (Porter stemming) AND CJK
+    # (bigrams) together. Also: "en" (English only), "zh"/"ja"/"ko" (single CJK).
+    # Changing it triggers a full re-index.
+    language: str = "en+zh"
     # Multi-field BM25 weights: passage text + file name + path.
     field_boosts: dict = field(
         default_factory=lambda: {"contents": 1.0, "filename": 2.0, "pathtext": 1.0}

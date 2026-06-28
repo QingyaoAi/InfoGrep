@@ -41,7 +41,12 @@ filename/path.
 
 Sparse search is **multi-field**: it matches the query against the passage text *and*
 the file name and path (tokenized), with configurable boosts (`[sparse] field_boosts`),
-so you can find a file by its name/path, not only its contents. Results always include
+so you can find a file by its name/path, not only its contents.
+
+Sparse indexing is **bilingual by default** (`[sparse] language = "en+zh"`): English gets
+Porter stemming and Chinese/Japanese/Korean get CJK bigram analysis, in one index. Set
+`language` to `"en"`, `"zh"`, `"ja"`, or `"ko"` for a single language (changing it
+re-indexes). Results always include
 the original absolute path and file metadata (`abs_path`, `filename`, `ext`, `size`, `mtime`).
 
 **Sparse** (BM25) is on by default. **Dense** (embedding) retrieval is **off by default**
