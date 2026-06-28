@@ -46,6 +46,16 @@ def _tokenize_path(s: str) -> str:
     return _SEP_RE.sub(" ", s).strip()
 
 
+def make_analyzer(language: str):
+    """Lucene analyzer for a language: DefaultEnglishAnalyzer for 'en', else the
+    Anserini language-specific analyzer (CJKAnalyzer bigrams for zh/ja/ko)."""
+    from pyserini.pyclass import autoclass
+
+    if language and language != "en":
+        return autoclass("io.anserini.analysis.AnalyzerMap").getLanguageSpecificAnalyzer(language)
+    return autoclass("io.anserini.analysis.DefaultEnglishAnalyzer").newDefaultInstance()
+
+
 def _row_to_json(row) -> str:
     """Serialize a manifest passage Row to a Pyserini JsonCollection line.
 
@@ -71,11 +81,27 @@ class SparseIndex:
 
     name = "sparse"
 
-    def __init__(self, index_dir: Path, cache_dir: Path, field_boosts: dict | None = None):
+    def __init__(
+        self,
+        index_dir: Path,
+        cache_dir: Path,
+        field_boosts: dict | None = None,
+        language: str = "en",
+    ):
         self.index_dir = index_dir
         self.cache_dir = cache_dir
         self.field_boosts = dict(field_boosts or DEFAULT_FIELD_BOOSTS)
+        self.language = language
         self._searcher = None  # lazily constructed SimpleSearcher
+
+    @property
+    def _lang_marker(self) -> Path:
+        return self.index_dir / "infogrep_lang.txt"
+
+    def built_language(self) -> str:
+        """The analyzer language the existing index was built with (default 'en')."""
+        p = self._lang_marker
+        return p.read_text().strip() if p.is_file() else "en"
 
     # -- build -------------------------------------------------------------
 
@@ -106,6 +132,7 @@ class SparseIndex:
             "-index", str(self.index_dir),
             "-generator", "DefaultLuceneDocumentGenerator",
             "-threads", "4",
+            "-language", self.language,
             "-storePositions", "-storeDocvectors", "-storeRaw",
             "-fields", *META_FIELDS,  # index filename + path as searchable fields
         ]
@@ -115,6 +142,7 @@ class SparseIndex:
             raise RuntimeError(
                 f"pyserini indexing failed (exit {proc.returncode}):\n{proc.stderr[-2000:]}"
             )
+        self._lang_marker.write_text(self.language)  # record analyzer language
         self._searcher = None  # force reopen against the fresh index
         return n
 
@@ -130,7 +158,8 @@ class SparseIndex:
         from jnius import cast
         from pyserini.pyclass import autoclass
 
-        Analyzer = autoclass("io.anserini.analysis.DefaultEnglishAnalyzer")
+        # Use the analyzer the index was built with, so new docs tokenize consistently.
+        analyzer = make_analyzer(self.built_language())
         FSDirectory = autoclass("org.apache.lucene.store.FSDirectory")
         Paths = autoclass("java.nio.file.Paths")
         IndexWriter = autoclass("org.apache.lucene.index.IndexWriter")
@@ -167,7 +196,7 @@ class SparseIndex:
         contents_type.setStored(False)
         contents_type.freeze()
 
-        config = IndexWriterConfig(Analyzer.newDefaultInstance())
+        config = IndexWriterConfig(analyzer)
         config.setOpenMode(OpenMode.CREATE_OR_APPEND)
         writer = IndexWriter(FSDirectory.open(Paths.get(str(self.index_dir))), config)
         try:
@@ -213,6 +242,10 @@ class SparseIndex:
                 )
             SimpleSearcher = autoclass("io.anserini.search.SimpleSearcher")
             self._searcher = SimpleSearcher(str(self.index_dir))
+            # Parse queries with the same analyzer the index was built with.
+            lang = self.built_language()
+            if lang != "en":
+                self._searcher.set_language(lang)
         return self._searcher
 
     def _fields_map(self):

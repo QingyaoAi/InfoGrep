@@ -45,6 +45,7 @@ class SearchEngine:
                 self.config.sparse_dir,
                 self.config.cache_dir,
                 field_boosts=self.config.sparse.field_boosts,
+                language=self.config.sparse.language,
             )
         return self._sparse
 

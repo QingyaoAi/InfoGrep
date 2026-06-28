@@ -239,12 +239,17 @@ class Indexer:
         if cfg.sparse.enabled:
             from .retrieval.sparse import SparseIndex
 
-            sparse = SparseIndex(cfg.sparse_dir, cfg.cache_dir)
+            sparse = SparseIndex(
+                cfg.sparse_dir, cfg.cache_dir,
+                field_boosts=cfg.sparse.field_boosts, language=cfg.sparse.language,
+            )
             # A committed Lucene index has a segments_N file; a crashed build won't.
             index_exists = cfg.sparse_dir.is_dir() and any(cfg.sparse_dir.glob("segments*"))
+            # A language change requires re-tokenizing everything (full rebuild).
+            lang_changed = index_exists and sparse.built_language() != cfg.sparse.language
             try:
-                if full or not index_exists:
-                    if changed or not index_exists:
+                if full or not index_exists or lang_changed:
+                    if changed or not index_exists or lang_changed:
                         sparse.build(manifest.iter_passages())
                 elif removed_ids or changed_paths:
                     sparse.update(removed_ids, manifest.passages_for_paths(changed_paths))
