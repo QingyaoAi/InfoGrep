@@ -36,3 +36,22 @@ def test_per_page_passages_keep_page_numbers():
     out = chunk_pages("d", pages, ChunkConfig(size=50, overlap=5))
     assert [p.page for p in out] == [1, 2]
     assert [p.ordinal for p in out] == [0, 1]
+
+
+def test_clean_text_strips_control_chars():
+    from infogrep.ingest.chunker import clean_text
+    assert clean_text("a\x00b\x01c\x1fd") == "abcd"
+    assert clean_text("keep\ttab\nnewline") == "keep\ttab\nnewline"
+
+
+def test_binary_garbage_page_is_dropped():
+    # A page that is mostly NUL/control/symbol junk (failed binary extraction) -> no passages.
+    garbage = "".join(chr(i % 32) for i in range(4000)) + "›ﬁﬂ‡·‚„‰" * 200
+    pages = [ExtractedPage(page=1, text=garbage)]
+    assert chunk_pages("junk.doc", pages, ChunkConfig(size=50, overlap=5)) == []
+
+
+def test_real_text_with_some_control_chars_kept():
+    pages = [ExtractedPage(page=None, text="The quick\x00 brown fox\x07 jumps over the lazy dog")]
+    out = chunk_pages("a.txt", pages, ChunkConfig(size=50, overlap=5))
+    assert out and "\x00" not in out[0].text and "brown" in out[0].text
