@@ -94,6 +94,60 @@ def test_indexing_works_on_read_only_folder(tmp_path):
             os.chmod(p, stat.S_IRWXU)
 
 
+def test_parallel_extraction_matches_serial(tmp_path):
+    # Same result whether extraction runs in 1 or multiple worker processes.
+    for i in range(12):
+        (tmp_path / f"doc_{i:02d}.txt").write_text(f"document number {i} about retrieval and search")
+
+    serial = Indexer(_cfg(tmp_path))
+    serial.config.ingest.workers = 1
+    r1 = serial.reindex()
+
+    # Fresh index dir for the parallel run (different tmp target).
+    (tmp_path / "x").mkdir()
+    parallel = Indexer(_cfg(tmp_path))
+    parallel.config.ingest.workers = 4
+    r2 = parallel.reindex(full=True)
+
+    assert r1.added == 12 and r2.modified == 12  # second run re-extracted all (full)
+    assert r2.n_passages == r1.n_passages
+    # Content from a worker-extracted file is in the manifest.
+    from infogrep.manifest import Manifest
+    with Manifest(parallel.config.manifest_path) as m:
+        assert m.count_passages() == r2.n_passages
+
+
+def test_progress_callback_and_incremental_commit(tmp_path, monkeypatch):
+    import infogrep.indexer as idx_mod
+    monkeypatch.setattr(idx_mod, "_COMMIT_EVERY", 3)  # commit often so progress fires
+    for i in range(7):
+        (tmp_path / f"f{i}.txt").write_text(f"file {i} content")
+    cfg = _cfg(tmp_path)
+    cfg.ingest.workers = 1
+    seen = []
+    Indexer(cfg).reindex(on_progress=lambda d, t: seen.append((d, t)))
+    assert seen and seen[-1][1] == 7  # total reported correctly
+    assert max(d for d, _ in seen) <= 7
+
+
+def test_resume_after_interrupted_run(tmp_path):
+    # Simulate an interrupted first build: a manifest with SOME files already committed.
+    # A subsequent reindex must skip those (unchanged) and only do the rest.
+    for i in range(6):
+        (tmp_path / f"d{i}.txt").write_text(f"content {i}")
+    cfg = _cfg(tmp_path)
+
+    # First pass: index only 3 of the files (by restricting include), commit.
+    cfg.include = [f"d{i}.txt" for i in range(3)]
+    r1 = Indexer(cfg).reindex()
+    assert r1.added == 3
+
+    # Second pass: full include -> the 3 already-indexed are unchanged, 3 are new.
+    cfg.include = ["**/*"]
+    r2 = Indexer(cfg).reindex()
+    assert r2.added == 3 and r2.unchanged == 3
+
+
 def test_full_reindex_reprocesses_all(tmp_path):
     _corpus(tmp_path)
     idx = Indexer(_cfg(tmp_path))

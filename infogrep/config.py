@@ -53,6 +53,7 @@ class IngestConfig:
 
     ocr: bool = False  # OCR PDF pages that have little/no extractable text (needs tesseract)
     ocr_min_chars: int = 16  # below this many chars on a page, try OCR
+    workers: int = 0  # parallel extraction processes; 0 = auto (min(8, cpu count))
 
 
 @dataclass

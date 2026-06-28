@@ -8,12 +8,14 @@ backends will read from.
 from __future__ import annotations
 
 import hashlib
+import itertools
+import os
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import Config
+from .config import ChunkConfig, Config
 from .ingest.chunker import chunk_pages
 from .ingest.extract.registry import extract, is_supported
 from .ingest.types import Passage
@@ -21,6 +23,36 @@ from .ingest.walker import walk
 from .manifest import Manifest
 
 _HASH_CHUNK = 1 << 20  # 1 MiB streaming read; never load whole files into memory
+
+
+def _take(iterator, n):
+    """Pull up to ``n`` items from an iterator (for priming the worker pool)."""
+    return list(itertools.islice(iterator, n))
+_COMMIT_EVERY = 500  # commit the manifest every N files: durable + resumable progress
+
+
+def _extract_task(task):
+    """Worker (runs in a separate process): extract + chunk + hash one file.
+
+    Module-level and picklable so it can run under ProcessPoolExecutor. Returns
+    ``(rel, passages, content_hash, error_or_None)``; passages is empty when the file
+    has no extractable content (the parent then indexes it name-only).
+    """
+    abs_path, rel, ocr, ocr_min_chars, size, overlap, supported = task
+    p = Path(abs_path)
+    passages: list[Passage] = []
+    err = None
+    try:
+        if supported:
+            pages = extract(p, ocr=ocr, ocr_min_chars=ocr_min_chars)
+            passages = chunk_pages(rel, pages, ChunkConfig(size=size, overlap=overlap))
+    except Exception as exc:  # extractor failure shouldn't abort the run
+        err = f"{rel}: {exc}"
+    try:
+        content_hash = _hash_file(p)
+    except OSError as exc:
+        content_hash, err = "", err or f"{rel}: {exc}"
+    return rel, passages, content_hash, err
 
 
 def _hash_file(path: Path) -> str:
@@ -54,7 +86,11 @@ class Indexer:
     def __init__(self, config: Config):
         self.config = config
 
-    def reindex(self, full: bool = False) -> IndexReport:
+    def reindex(self, full: bool = False, on_progress=None) -> IndexReport:
+        """(Re)index the directory. Only changed files are re-extracted (the manifest
+        remembers what's indexed); extraction runs across worker processes; the manifest
+        is committed periodically so an interrupted run resumes instead of restarting.
+        """
         cfg = self.config
         cfg.index_dir.mkdir(parents=True, exist_ok=True)
         # Record which folder this index belongs to (the target is never written to).
@@ -64,10 +100,12 @@ class Indexer:
         with Manifest(cfg.manifest_path) as manifest:
             version = manifest.next_version()
             seen: set[str] = set()
-            # Passage-level delta for incremental backend updates.
-            removed_ids: set[str] = set()
+            removed_ids: set[str] = set()  # passage-level delta for incremental backends
             changed_paths: set[str] = set()
 
+            # 1) Walk + change-detect (cheap, single pass). Only added/modified files
+            #    need (re)extraction; unchanged ones are skipped entirely.
+            todo: list[tuple[Path, str, os.stat_result, str]] = []
             for abs_path, rel in walk(cfg):
                 seen.add(rel)
                 try:
@@ -75,48 +113,70 @@ class Indexer:
                 except OSError as exc:
                     report.errors.append(f"{rel}: {exc}")
                     continue
-
-                row = manifest.get_file(rel)
-                change = self._classify(row, stat, abs_path, full)
+                change = self._classify(manifest.get_file(rel), stat, abs_path, full)
                 if change == "unchanged":
                     report.unchanged += 1
                     continue
+                if change == "modified":
+                    removed_ids.update(manifest.passage_ids_for_path(rel))
+                todo.append((abs_path, rel, stat, change))
 
-                try:
-                    passages = self._build_passages(abs_path, rel) if is_supported(abs_path) else []
-                except Exception as exc:  # extractor failure shouldn't abort the run
-                    report.errors.append(f"{rel}: {exc}")
-                    passages = []
+            total = len(todo)
+            done = 0
 
-                # Files with no extractable content are still indexed by name/path
-                # (a single empty-content stub passage), so they're findable by filename.
-                if not passages:
+            def store(rel, passages, content_hash, err, stat, change):
+                nonlocal done
+                if err:
+                    report.errors.append(err)
+                if not passages:  # no content -> still indexed by name/path
                     passages = [self._stub_passage(rel)]
                     report.name_only += 1
-
-                if change == "modified":
-                    # Capture old passage ids before they're replaced, so the backends
-                    # can delete them incrementally.
-                    removed_ids.update(manifest.passage_ids_for_path(rel))
-
-                content_hash = self._cached_hash(abs_path)
-                # File row must exist before passages (passages.path FK -> files.path).
                 manifest.upsert_file(
-                    path=rel,
-                    size=stat.st_size,
-                    mtime=stat.st_mtime,
-                    content_hash=content_hash,
-                    n_passages=len(passages),
-                    version=version,
+                    path=rel, size=stat.st_size, mtime=stat.st_mtime,
+                    content_hash=content_hash, n_passages=len(passages), version=version,
                 )
                 manifest.replace_passages(rel, passages)
                 changed_paths.add(rel)
-                if change == "added":
-                    report.added += 1
-                else:
-                    report.modified += 1
+                report.added += 1 if change == "added" else 0
+                report.modified += 1 if change == "modified" else 0
+                done += 1
+                if done % _COMMIT_EVERY == 0:  # durable, resumable progress
+                    manifest.commit()
+                    if on_progress:
+                        on_progress(done, total)
 
-            # Files in the manifest but no longer on disk are deleted.
+            def task_for(item):
+                abs_path, rel, _stat, _change = item
+                return (str(abs_path), rel, cfg.ingest.ocr, cfg.ingest.ocr_min_chars,
+                        cfg.chunk.size, cfg.chunk.overlap, is_supported(abs_path))
+
+            # 2) Extract in parallel (bounded in-flight so memory stays low), writing
+            #    results to the manifest on this thread (SQLite is single-writer).
+            workers = self._worker_count(total)
+            if workers > 1:
+                from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
+                it = iter(todo)
+                with ProcessPoolExecutor(max_workers=workers) as ex:
+                    inflight = {}
+                    for item in _take(it, workers * 2):
+                        inflight[ex.submit(_extract_task, task_for(item))] = item
+                    while inflight:
+                        finished, _ = wait(inflight, return_when=FIRST_COMPLETED)
+                        for fut in finished:
+                            _, rel, stat, change = inflight.pop(fut)
+                            r, passages, content_hash, err = fut.result()
+                            store(rel, passages, content_hash, err, stat, change)
+                            nxt = next(it, None)
+                            if nxt is not None:
+                                inflight[ex.submit(_extract_task, task_for(nxt))] = nxt
+            else:
+                for item in todo:
+                    _, rel, stat, change = item
+                    r, passages, content_hash, err = _extract_task(task_for(item))
+                    store(rel, passages, content_hash, err, stat, change)
+
+            # 3) Files in the manifest but no longer on disk are deleted.
             for rel in manifest.all_paths() - seen:
                 removed_ids.update(manifest.passage_ids_for_path(rel))
                 manifest.delete_file(rel)
@@ -124,6 +184,8 @@ class Indexer:
 
             manifest.set_meta("last_indexed_at", str(time.time()))
             manifest.commit()
+            if on_progress and total:
+                on_progress(done, total)
 
             stats = manifest.stats()
             report.n_files = stats["n_files"]
@@ -131,9 +193,16 @@ class Indexer:
 
             self._build_backends(manifest, report, full, removed_ids, changed_paths)
 
-        # reset per-run hash cache
         self._hash_cache: dict[Path, str] = {}
         return report
+
+    def _worker_count(self, total: int) -> int:
+        configured = self.config.ingest.workers
+        if configured and configured > 0:
+            return max(1, min(configured, total))
+        if total < 8:  # small jobs: process-spawn overhead isn't worth it
+            return 1
+        return max(1, min(min(8, os.cpu_count() or 4), total))
 
     def status(self, check_staleness: bool = True) -> dict:
         if not self.config.manifest_path.is_file():
@@ -210,14 +279,6 @@ class Indexer:
         return Passage(
             passage_id=f"{rel}#0", doc_id=rel, path=rel, ordinal=0, text=text, page=None, offset=0
         )
-
-    def _build_passages(self, abs_path: Path, rel: str):
-        pages = extract(
-            abs_path,
-            ocr=self.config.ingest.ocr,
-            ocr_min_chars=self.config.ingest.ocr_min_chars,
-        )
-        return chunk_pages(rel, pages, self.config.chunk)
 
     def _build_backends(
         self,

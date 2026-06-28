@@ -50,7 +50,11 @@ def index(
 
     typer.echo(f"[infogrep] indexing {cfg.target_dir}")
     typer.echo(f"[infogrep] index location: {cfg.index_dir}")
-    report = Indexer(cfg).reindex(full=full)
+
+    def _progress(done: int, total: int) -> None:
+        typer.echo(f"[infogrep] extracted {done}/{total} files…", err=True)
+
+    report = Indexer(cfg).reindex(full=full, on_progress=_progress)
     typer.echo(
         "[infogrep] "
         f"added={report.added} modified={report.modified} deleted={report.deleted} "
