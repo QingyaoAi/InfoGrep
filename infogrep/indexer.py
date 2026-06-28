@@ -142,6 +142,7 @@ class Indexer:
                 done += 1
                 if done % _COMMIT_EVERY == 0:  # durable, resumable progress
                     manifest.commit()
+                    manifest.checkpoint()  # keep the WAL bounded (don't let it grow to GBs)
                     if on_progress:
                         on_progress(done, total)
 

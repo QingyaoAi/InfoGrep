@@ -28,7 +28,17 @@ class Manifest:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        # Bulk-write tuning: NORMAL is durable under WAL (only risks the last txn on power
+        # loss) and avoids an fsync per commit — the dominant cost when indexing a large
+        # corpus into a multi-GB manifest. Plus a bigger page cache and in-memory temps.
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA temp_store=MEMORY")
+        self._conn.execute("PRAGMA cache_size=-65536")  # ~64 MB
         self._init_schema()
+
+    def checkpoint(self) -> None:
+        """Fold the WAL back into the main DB and truncate it (keeps the WAL bounded)."""
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     # -- lifecycle ---------------------------------------------------------
 
