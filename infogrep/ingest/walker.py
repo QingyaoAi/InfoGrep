@@ -25,11 +25,21 @@ def walk(config: Config) -> Iterator[tuple[Path, str]]:
     root = config.target_dir
     include = _spec(config.include)
     exclude = _spec(config.exclude)
-    pruned = {SIDECAR_DIRNAME, ".git"}
+    always_pruned = {SIDECAR_DIRNAME, ".git"}
 
     for dirpath, dirnames, filenames in os.walk(root):
-        # Prune noisy directories in place so os.walk doesn't descend into them.
-        dirnames[:] = [d for d in dirnames if d not in pruned]
+        # Prune directories in place so os.walk never descends into them: always skip
+        # .git/.infogrep, and skip any directory matching an exclude pattern (so huge
+        # trees like node_modules aren't traversed at all).
+        kept = []
+        for d in dirnames:
+            if d in always_pruned:
+                continue
+            rel_d = (Path(dirpath) / d).relative_to(root).as_posix()
+            if exclude.match_file(rel_d) or exclude.match_file(rel_d + "/"):
+                continue
+            kept.append(d)
+        dirnames[:] = kept
         for name in filenames:
             abs_path = Path(dirpath) / name
             rel = abs_path.relative_to(root).as_posix()

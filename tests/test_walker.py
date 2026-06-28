@@ -38,3 +38,17 @@ def test_include_pattern_restricts(tmp_path):
     cfg.include = ["**/*.md"]
     rels = {rel for _, rel in walk(cfg)}
     assert rels == {"sub/b.md"}
+
+
+def test_excluded_directories_are_pruned(tmp_path):
+    (tmp_path / "keep.md").write_text("x")
+    nm = tmp_path / "node_modules" / "pkg"
+    nm.mkdir(parents=True)
+    (nm / "index.js").write_text("junk")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.md").write_text("y")
+    cfg = Config.load(tmp_path)
+    cfg.exclude = cfg.exclude + ["**/node_modules/**", "node_modules/**"]
+    rels = {rel for _, rel in walk(cfg)}
+    assert "keep.md" in rels and "src/a.md" in rels
+    assert not any("node_modules" in r for r in rels)
