@@ -56,7 +56,9 @@ class Indexer:
 
     def reindex(self, full: bool = False) -> IndexReport:
         cfg = self.config
-        cfg.sidecar_dir.mkdir(parents=True, exist_ok=True)
+        cfg.index_dir.mkdir(parents=True, exist_ok=True)
+        # Record which folder this index belongs to (the target is never written to).
+        (cfg.index_dir / "source.txt").write_text(str(cfg.target_dir))
         report = IndexReport()
 
         with Manifest(cfg.manifest_path) as manifest:

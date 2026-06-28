@@ -24,9 +24,9 @@ def _get(port, path):
 def _indexed_dir(tmp_path):
     (tmp_path / "berry.txt").write_text("blueberries are rich in antioxidants and vitamins")
     (tmp_path / "car.txt").write_text("the sedan has a powerful engine and four wheels")
-    sidecar = tmp_path / ".infogrep"
-    sidecar.mkdir()
-    (sidecar / "config.toml").write_text(
+    cfg = Config.load(tmp_path)
+    cfg.index_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index_dir / "config.toml").write_text(
         "[sparse]\nenabled = false\n[dense]\nenabled = true\nembedder = 'hash'\n"
     )
     Indexer(Config.load(tmp_path)).reindex()

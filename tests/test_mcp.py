@@ -11,11 +11,11 @@ from infogrep.indexer import Indexer
 def _index(tmp_path):
     (tmp_path / "fox.txt").write_text("The quick brown fox jumps over the lazy dog.")
     (tmp_path / "berry.txt").write_text("Blueberries are rich in antioxidants and vitamins.")
-    # Persist config so the MCP tools (which reload config from disk) agree with how
-    # the index was built: hash embedder, sparse off (JVM-free).
-    sidecar = tmp_path / ".infogrep"
-    sidecar.mkdir(exist_ok=True)
-    (sidecar / "config.toml").write_text(
+    # Persist config (in the separate index dir) so the MCP tools, which reload config
+    # from disk, agree with how the index was built: hash embedder, sparse off (JVM-free).
+    cfg = Config.load(tmp_path)
+    cfg.index_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index_dir / "config.toml").write_text(
         "[sparse]\nenabled = false\n[dense]\nenabled = true\nembedder = 'hash'\n"
     )
     Indexer(Config.load(tmp_path)).reindex()

@@ -1,11 +1,17 @@
 """Configuration model and per-directory config loading.
 
-A target directory's config lives at ``<dir>/.infogrep/config.toml``. Anything not
-specified there falls back to the defaults below.
+Indexing never writes into the indexed folder. Each directory's index lives in a
+separate location under ``$INFOGREP_HOME`` (default ``~/.infogrep``):
+``$INFOGREP_HOME/indexes/<name>-<hash-of-abs-path>/``. Per-directory config is read from
+that index dir's ``config.toml`` (with an optional global ``$INFOGREP_HOME/config.toml``
+as a base).
 """
 
 from __future__ import annotations
 
+import hashlib
+import os
+import re
 import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -15,8 +21,22 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - exercised only on 3.10
     import tomli as tomllib
 
-# Name of the side-car directory written inside each indexed directory.
+# Legacy in-folder side-car name — still pruned during the walk so an old one (or a
+# stray) inside a target never gets indexed. InfoGrep no longer creates it.
 SIDECAR_DIRNAME = ".infogrep"
+
+
+def index_home() -> Path:
+    """Root for all InfoGrep indexes (override with the INFOGREP_HOME env var)."""
+    return Path(os.environ.get("INFOGREP_HOME", "~/.infogrep")).expanduser()
+
+
+def index_dir_for(target_dir: Path) -> Path:
+    """Stable, separate index location for a target directory (outside the target)."""
+    target = Path(target_dir).expanduser().resolve()
+    digest = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:12]
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", target.name) or "root"
+    return index_home() / "indexes" / f"{name}-{digest}"
 
 
 @dataclass
@@ -92,35 +112,35 @@ class Config:
     kb: KnowledgeBaseConfig = field(default_factory=KnowledgeBaseConfig)
 
     @property
-    def sidecar_dir(self) -> Path:
-        return self.target_dir / SIDECAR_DIRNAME
+    def index_dir(self) -> Path:
+        """Where this directory's index lives — a separate location, not in the target."""
+        return index_dir_for(self.target_dir)
 
     @property
     def manifest_path(self) -> Path:
-        return self.sidecar_dir / "manifest.sqlite"
+        return self.index_dir / "manifest.sqlite"
 
     @property
     def sparse_dir(self) -> Path:
-        return self.sidecar_dir / "sparse"
+        return self.index_dir / "sparse"
 
     @property
     def dense_dir(self) -> Path:
-        return self.sidecar_dir / "dense"
+        return self.index_dir / "dense"
 
     @property
     def cache_dir(self) -> Path:
-        return self.sidecar_dir / "cache"
+        return self.index_dir / "cache"
 
     @classmethod
     def load(cls, target_dir: str | Path) -> "Config":
-        """Load config for ``target_dir``, applying defaults for anything unset."""
+        """Load config for ``target_dir`` (global config.toml, then per-index override)."""
         target = Path(target_dir).expanduser().resolve()
         cfg = cls(target_dir=target)
-        config_file = cfg.sidecar_dir / "config.toml"
-        if config_file.is_file():
-            with config_file.open("rb") as fh:
-                data = tomllib.load(fh)
-            cfg = cls._merge(cfg, data)
+        for config_file in (index_home() / "config.toml", cfg.index_dir / "config.toml"):
+            if config_file.is_file():
+                with config_file.open("rb") as fh:
+                    cfg = cls._merge(cfg, tomllib.load(fh))
         return cfg
 
     @staticmethod

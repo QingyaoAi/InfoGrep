@@ -48,7 +48,8 @@ def index(
         typer.echo(f"[infogrep] not a directory: {cfg.target_dir}", err=True)
         raise typer.Exit(code=2)
 
-    typer.echo(f"[infogrep] indexing {cfg.target_dir} -> {cfg.sidecar_dir}")
+    typer.echo(f"[infogrep] indexing {cfg.target_dir}")
+    typer.echo(f"[infogrep] index location: {cfg.index_dir}")
     report = Indexer(cfg).reindex(full=full)
     typer.echo(
         "[infogrep] "
@@ -114,6 +115,7 @@ def status(
     cfg = Config.load(directory)
     info = Indexer(cfg).status()
     typer.echo(f"[infogrep] target: {cfg.target_dir}")
+    typer.echo(f"[infogrep] index location: {cfg.index_dir}")
     if not info.get("indexed"):
         typer.echo("[infogrep] indexed: no")
         typer.echo("[infogrep] run `infogrep index <dir>` to build the index.")

@@ -39,7 +39,10 @@ def install(directory: Path, hour: int = 3, minute: int = 0) -> Path:
     """Install (or replace) a daily reindex agent for ``directory`` at HH:MM. Returns plist path."""
     directory = Path(directory).expanduser().resolve()
     LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
-    log = directory / ".infogrep" / "reindex.log"
+    # Log into the (separate) index location, never the indexed folder.
+    from .config import index_dir_for
+
+    log = index_dir_for(directory) / "reindex.log"
     log.parent.mkdir(parents=True, exist_ok=True)
 
     plist = {

@@ -8,7 +8,9 @@ See [PLAN.md](PLAN.md) for the full design and milestones.
 
 ## Status
 
-Early scaffold (M0). Command surface is stubbed; retrieval lands in later milestones.
+Working: incremental indexing of many file types, sparse (BM25, multi-field, bilingual)
++ optional dense (Zvec) + Obsidian knowledge-base retrieval, hybrid fusion, a CLI, an MCP
+server, and a browser UI.
 
 ## Quick start
 
@@ -21,7 +23,7 @@ uv run pytest            # run tests
 ## Commands
 
 ```bash
-infogrep index <dir>                 # build / update the side-car index for a directory
+infogrep index <dir>                 # build / update the index for a directory (stored separately)
 infogrep search <query> -d <dir>     # query (modes: hybrid [default] | sparse | dense)
 infogrep search <query> --prf        # sparse query expansion (RM3)
 infogrep status <dir>                 # show index status + staleness (pending changes)
@@ -31,7 +33,10 @@ infogrep schedule install <dir> --at 03:00   # daily auto-reindex via launchd
 infogrep schedule list | uninstall <dir>
 ```
 
-Indices live in a `<dir>/.infogrep/` side-car; original files are never modified.
+**The indexed folder is never modified.** InfoGrep only reads your files; the index is
+written to a separate location — `$INFOGREP_HOME/indexes/<name>-<hash>/` (default
+`~/.infogrep`). Per-directory config is `config.toml` in that index dir (or a global
+`$INFOGREP_HOME/config.toml`). `infogrep status <dir>` prints the exact index location.
 
 **Supported files:** content is extracted from PDF, DOCX, legacy DOC (via macOS
 `textutil`), PPTX, XLSX, and text/code/markup formats; images (PNG/JPG/…) and scanned
@@ -51,20 +56,20 @@ the original absolute path and file metadata (`abs_path`, `filename`, `ext`, `si
 
 **Sparse** (BM25) is on by default. **Dense** (embedding) retrieval is **off by default**
 — it needs a model download and significant RAM/GPU — enable it per directory with
-`[dense] enabled = true` in `.infogrep/config.toml`. With dense off, `hybrid` simply runs
+`[dense] enabled = true` in the index's `config.toml`. With dense off, `hybrid` simply runs
 sparse (plus the knowledge base, if enabled).
 
 ## Daily auto-reindex
 
 `infogrep schedule install <dir>` registers a macOS launchd agent that reindexes the
-directory once a day (logs to `<dir>/.infogrep/reindex.log`). `infogrep status` reports
+directory once a day (logs to the index dir's `reindex.log`). `infogrep status` reports
 **staleness** — how many files are added/modified/deleted since the last index — so you
 know when a manual `infogrep index` is due.
 
 ## Scanned PDFs (OCR)
 
 PDFs with no text layer (scans) can be OCR'd at ingest time. Requires `tesseract`.
-Enable per directory in `.infogrep/config.toml`:
+Enable per directory in the index's `config.toml`:
 
 ```toml
 [ingest]
@@ -98,7 +103,7 @@ and reports which were `used`/`skipped`.
 `search_kb` adds graph-aware search over an Obsidian vault via the **Obsidian CLI**:
 it `search`es the live vault, then expands along `links`/`backlinks` so notes
 *connected* to a match surface too. Requires the Obsidian app running with the vault
-open. Enable it per indexed directory in `<dir>/.infogrep/config.toml`:
+open. Enable it per indexed directory in the index's `config.toml`:
 
 ```toml
 [kb]

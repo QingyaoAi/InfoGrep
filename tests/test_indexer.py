@@ -51,6 +51,49 @@ def test_index_then_noop_then_change(tmp_path):
     assert r4.n_files == 3  # notes.md, code.py, binary.bin
 
 
+def _snapshot(root):
+    return {
+        str(p.relative_to(root)): (p.stat().st_size, p.stat().st_mtime_ns)
+        for p in root.rglob("*")
+    }
+
+
+def test_indexing_does_not_touch_target_and_index_is_separate(tmp_path):
+    (tmp_path / "a.txt").write_text("hello world")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.md").write_text("more text here")
+    cfg = _cfg(tmp_path)
+
+    before = _snapshot(tmp_path)
+    Indexer(cfg).reindex()
+    after = _snapshot(tmp_path)
+
+    # The target folder is completely unchanged (no new files, no mtime/size changes).
+    assert before == after
+    assert not (tmp_path / ".infogrep").exists()
+    # The index lives in a separate location and is populated there.
+    assert not cfg.index_dir.is_relative_to(tmp_path.resolve())
+    assert cfg.manifest_path.exists()
+
+
+def test_indexing_works_on_read_only_folder(tmp_path):
+    import os
+    import stat
+
+    (tmp_path / "doc.txt").write_text("read only content about retrieval")
+    cfg = _cfg(tmp_path)
+    # Make the whole target tree read-only; indexing must still succeed (reads only).
+    for p in [tmp_path, *tmp_path.rglob("*")]:
+        os.chmod(p, stat.S_IREAD | stat.S_IEXEC)
+    try:
+        report = Indexer(cfg).reindex()
+        assert report.added == 1 and not report.errors
+        assert cfg.manifest_path.exists()
+    finally:
+        for p in [tmp_path, *tmp_path.rglob("*")]:
+            os.chmod(p, stat.S_IRWXU)
+
+
 def test_full_reindex_reprocesses_all(tmp_path):
     _corpus(tmp_path)
     idx = Indexer(_cfg(tmp_path))

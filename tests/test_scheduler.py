@@ -31,7 +31,9 @@ def test_install_writes_valid_plist(tmp_path, monkeypatch):
     assert data["ProgramArguments"][0] == sys.executable
     assert data["ProgramArguments"][-2:] == ["index", str(target.resolve())]
     assert "PATH" in data["EnvironmentVariables"]
-    assert data["StandardOutPath"].endswith(".infogrep/reindex.log")
+    assert data["StandardOutPath"].endswith("reindex.log")
+    # Log lives in the separate index location, NOT inside the indexed folder.
+    assert str(target) not in data["StandardOutPath"]
 
 
 def test_list_and_uninstall(tmp_path, monkeypatch):
