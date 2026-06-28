@@ -135,7 +135,11 @@ class Indexer:
                     path=rel, size=stat.st_size, mtime=stat.st_mtime,
                     content_hash=content_hash, n_passages=len(passages), version=version,
                 )
-                manifest.replace_passages(rel, passages)
+                # New files: pure INSERT (no DELETE scan). Modified: delete-then-insert.
+                if change == "added":
+                    manifest.add_passages(passages)
+                else:
+                    manifest.replace_passages(rel, passages)
                 changed_paths.add(rel)
                 report.added += 1 if change == "added" else 0
                 report.modified += 1 if change == "modified" else 0

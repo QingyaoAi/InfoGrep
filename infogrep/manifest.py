@@ -69,6 +69,9 @@ class Manifest:
                 FOREIGN KEY (path) REFERENCES files(path) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_passages_doc ON passages(doc_id);
+            -- Index on path: without it, DELETE ... WHERE path (in replace_passages)
+            -- and the ON DELETE CASCADE both full-scan a multi-GB table per file (O(N^2)).
+            CREATE INDEX IF NOT EXISTS idx_passages_path ON passages(path);
             """
         )
         self._conn.execute(
@@ -144,9 +147,8 @@ class Manifest:
         """Remove a file and its passages (ON DELETE CASCADE handles passages)."""
         self._conn.execute("DELETE FROM files WHERE path = ?", (path,))
 
-    def replace_passages(self, path: str, passages: list[Passage]) -> None:
-        """Atomically swap the passages for one file."""
-        self._conn.execute("DELETE FROM passages WHERE path = ?", (path,))
+    def add_passages(self, passages: list[Passage]) -> None:
+        """Insert passages for a NEW file (no delete — avoids a needless table scan)."""
         self._conn.executemany(
             """
             INSERT INTO passages(passage_id, doc_id, path, ordinal, page, offset, text)
@@ -157,6 +159,11 @@ class Manifest:
                 for p in passages
             ],
         )
+
+    def replace_passages(self, path: str, passages: list[Passage]) -> None:
+        """Atomically swap the passages for one file (delete old, insert new)."""
+        self._conn.execute("DELETE FROM passages WHERE path = ?", (path,))
+        self.add_passages(passages)
 
     def commit(self) -> None:
         self._conn.commit()
