@@ -28,3 +28,6 @@ models/
 
 # Env
 .env
+
+# Built macOS launcher app
+macos/InfoGrep.app/
