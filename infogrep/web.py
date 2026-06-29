@@ -75,7 +75,9 @@ PAGE = """<!doctype html>
 </header>
 <main>
   <form id="f">
-    <input type="text" id="q" placeholder="Search the indexed directory…" autofocus autocomplete="off"/>
+    <input type="text" id="q" placeholder="Search…" autofocus autocomplete="off"/>
+    <select id="dir" title="which indexed folder to search"></select>
+    <button id="adddir" type="button" title="Index another folder">＋ folder</button>
     <select id="mode" title="retrieval mode">
       <option value="hybrid">hybrid</option>
       <option value="sparse">sparse</option>
@@ -91,10 +93,36 @@ PAGE = """<!doctype html>
 </main>
 <script>
 const $ = id => document.getElementById(id);
+function curDir(){ return $('dir').value || ''; }
+async function loadIndexes(){
+  try{
+    const d = await (await fetch('/api/indexes')).json();
+    const sel = $('dir'); const prev = sel.value || d.default;
+    sel.innerHTML='';
+    for(const i of d.indexes){
+      const o=document.createElement('option'); o.value=i.dir;
+      o.textContent=i.name + (i.indexing?' (indexing…)':'') + (i.n_files!=null?'  ·  '+i.n_files+' files':'');
+      sel.appendChild(o);
+    }
+    if([...sel.options].some(o=>o.value===prev)) sel.value=prev;
+  }catch(e){}
+}
 async function status(){
-  try{ const s = await (await fetch('/api/status')).json();
-    $('status').textContent = s.indexed ? `${s.dir} — ${s.n_files} files, ${s.n_passages} passages${s.stale?' · STALE':''}` : `${s.dir} — not indexed`;
+  try{ const s = await (await fetch('/api/status?dir='+encodeURIComponent(curDir()))).json();
+    $('status').textContent = s.indexed ? `${s.dir} — ${s.n_files} files, ${s.n_passages} passages${s.indexing?' · indexing…':s.stale?' · STALE':''}` : `${s.dir} — not indexed`;
   }catch(e){ $('status').textContent = 'status unavailable'; }
+}
+async function addFolder(){
+  const dir = prompt('Absolute path of a folder to index:');
+  if(!dir) return;
+  $('status').textContent = 'indexing '+dir+' …';
+  try{ await fetch('/api/index?dir='+encodeURIComponent(dir), {method:'POST'}); }catch(e){}
+  await loadIndexes(); $('dir').value=dir; status();
+  // poll until it finishes
+  const t=setInterval(async()=>{ await loadIndexes();
+    const s=await (await fetch('/api/status?dir='+encodeURIComponent(dir))).json();
+    if(s.indexed && !s.indexing){ clearInterval(t); status(); }
+  }, 2000);
 }
 function el(tag, cls, text){ const e=document.createElement(tag); if(cls)e.className=cls; if(text!=null)e.textContent=text; return e; }
 async function search(ev){
@@ -102,7 +130,7 @@ async function search(ev){
   const q=$('q').value.trim(); if(!q) return;
   $('go').disabled=true; $('meta').textContent='Searching…'; $('results').innerHTML='';
   try{
-    const p=new URLSearchParams({q, mode:$('mode').value, k:$('k').value, prf:$('prf').checked?'1':'0'});
+    const p=new URLSearchParams({q, mode:$('mode').value, k:$('k').value, prf:$('prf').checked?'1':'0', dir:curDir()});
     const r=await (await fetch('/api/search?'+p)).json();
     if(r.error){ $('meta').innerHTML=''; $('meta').appendChild(el('span','err',r.error)); return; }
     const used=(r.used||[]).join(', ')||'—';
@@ -137,7 +165,9 @@ async function reveal(path){
   }catch(e){ $('meta').textContent='Could not open: '+e; }
 }
 $('f').addEventListener('submit', search);
-status();
+$('adddir').addEventListener('click', addFolder);
+$('dir').addEventListener('change', ()=>{ status(); $('q').focus(); });
+loadIndexes().then(status);
 </script>
 </body>
 </html>"""

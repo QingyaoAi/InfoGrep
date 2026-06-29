@@ -31,7 +31,33 @@ open InfoGrep.app     # launches the menu-bar agent; press ⌘⇧-Space
   `registerHotKey()` (e.g. swap `optionKey` for `controlKey`, or `kVK_Space` for another
   key code).
 
+## Pick / index folders
+
+The menu-bar 🔎 lists every InfoGrep index under **Search in:** — click one to switch which
+folder ⌘⇧Space searches (the choice is remembered). **Index a Folder…** opens a folder
+picker and indexes it in the background (shown as `(indexing…)` until ready). The browser
+UI has the same controls (a folder dropdown + **＋ folder**).
+
 ## Auto-start at login
 
-Move `InfoGrep.app` to `/Applications` and add it under System Settings → General →
-Login Items, or run it from a LaunchAgent. (A `--install` helper can be added later.)
+Copy the app somewhere stable and load a LaunchAgent that runs it at login:
+
+```bash
+cp -R InfoGrep.app ~/Applications/
+cat > ~/Library/LaunchAgents/com.infogrep.launcher.plist <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.infogrep.launcher</string>
+  <key>ProgramArguments</key><array><string>$HOME/Applications/InfoGrep.app/Contents/MacOS/InfoGrep</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+</dict></plist>
+PLIST
+launchctl load ~/Library/LaunchAgents/com.infogrep.launcher.plist
+```
+
+`RunAtLoad` starts it on login; `KeepAlive=false` means it stays quit if you Quit it from
+the menu. (It doesn't appear in System Settings → Login Items because it's an unsigned,
+hand-loaded LaunchAgent, but it runs.) Remove with
+`launchctl unload …/com.infogrep.launcher.plist && rm …/com.infogrep.launcher.plist`.
