@@ -49,6 +49,32 @@ def _passage(pid, text, path):
 
 
 @pytestmark_integration
+def test_prf_expands_from_multifield_results_not_content_noise(tmp_path):
+    # Regression: a doc relevant by FILENAME ("passport") with sparse content, vs a noise
+    # file whose CONTENT repeats "passport" but is topically unrelated. PRF must expand
+    # from the (multi-field) good results, not drift to the noise file.
+    from infogrep.retrieval.sparse import SparseIndex
+
+    si = SparseIndex(tmp_path / "sparse", tmp_path / "cache")
+    si.build(iter([
+        _passage("passport_form.pdf#0", "please complete sign and return the attached form",
+                 "passport_form.pdf"),
+        _passage("visa.pdf#0", "a valid passport is required for the visa appointment",
+                 "travel/visa.pdf"),
+        _passage("noise.txt#0", ("passport " * 30) + "quantum blockchain thermodynamics",
+                 "data/noise.txt"),
+    ]))
+
+    base = si.search("passport", k=5)
+    assert base[0].path == "passport_form.pdf"  # filename match wins without PRF
+
+    prf = si.search("passport", k=5, prf=True)
+    assert prf, "PRF returned no results"
+    assert prf[0].path != "data/noise.txt"  # did NOT drift to content noise
+    assert prf[0].path in ("passport_form.pdf", "travel/visa.pdf")
+
+
+@pytestmark_integration
 def test_multifield_matches_filename_and_path(tmp_path):
     from infogrep.retrieval.sparse import SparseIndex
 

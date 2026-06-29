@@ -75,7 +75,9 @@ class SparseConfig:
     """Sparse (Pyserini/BM25) settings."""
 
     enabled: bool = True
-    prf: bool = False  # RM3 pseudo-relevance feedback, off by default
+    prf: bool = False  # pseudo-relevance feedback (query expansion), off by default
+    prf_fb_docs: int = 10  # feedback documents (top multi-field results) to expand from
+    prf_fb_terms: int = 10  # expansion terms to add to the query
     # Analyzer language. Default "en+zh" handles English (Porter stemming) AND CJK
     # (bigrams) together. Also: "en" (English only), "zh"/"ja"/"ko" (single CJK).
     # Changing it triggers a full re-index.

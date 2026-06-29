@@ -46,6 +46,8 @@ class SearchEngine:
                 self.config.cache_dir,
                 field_boosts=self.config.sparse.field_boosts,
                 language=self.config.sparse.language,
+                prf_fb_docs=self.config.sparse.prf_fb_docs,
+                prf_fb_terms=self.config.sparse.prf_fb_terms,
             )
         return self._sparse
 

@@ -32,9 +32,28 @@ _SNIPPET_CHARS = 240
 META_FIELDS = ("filename", "pathtext")
 DEFAULT_FIELD_BOOSTS = {"contents": 1.0, "filename": 2.0, "pathtext": 1.0}
 
+# How many times the original query terms are repeated relative to expansion terms,
+# so PRF broadens recall without letting expansion override the user's query.
+_PRF_ORIGINAL_WEIGHT = 2
+
+# Common terms excluded from PRF expansion (English stopwords + generic file words).
+_PRF_STOPWORDS = frozenset(
+    "the a an and or of to in on for with is are was were be been by at as it this that"
+    " these those from but not we you he she they i my our your their its his her also"
+    " which what when where who how can will would should could may might do does did has"
+    " have had than then there here such into about over under via per etc page pages"
+    " pdf doc docx ppt pptx xls xlsx txt file files figure table http https www com".split()
+)
+
 # Split paths/filenames on separators so "intro.tex" -> "intro tex" (the analyzer keeps
 # "intro.tex" as one token otherwise, so "intro" wouldn't match).
 _SEP_RE = re.compile(r"[/\\._\-]+")
+
+_TOKEN_RE = re.compile(r"\w+")
+
+
+def _tokens(text: str) -> list[str]:
+    return _TOKEN_RE.findall(text.lower())
 
 
 def _filename(path: str) -> str:
@@ -100,12 +119,17 @@ class SparseIndex:
         cache_dir: Path,
         field_boosts: dict | None = None,
         language: str = "en+zh",
+        prf_fb_docs: int = 10,
+        prf_fb_terms: int = 10,
     ):
         self.index_dir = index_dir
         self.cache_dir = cache_dir
         self.field_boosts = dict(field_boosts or DEFAULT_FIELD_BOOSTS)
         self.language = language
+        self.prf_fb_docs = prf_fb_docs
+        self.prf_fb_terms = prf_fb_terms
         self._searcher = None  # lazily constructed SimpleSearcher
+        self._reader = None  # lazily opened IndexReader (for PRF term vectors)
 
     @property
     def _lang_marker(self) -> Path:
@@ -246,17 +270,96 @@ class SparseIndex:
             m.put(field, Float(float(boost)))
         return m
 
+    def _index_reader(self):
+        if self._reader is None:
+            from pyserini.pyclass import autoclass
+
+            FSDirectory = autoclass("org.apache.lucene.store.FSDirectory")
+            Paths = autoclass("java.nio.file.Paths")
+            DirectoryReader = autoclass("org.apache.lucene.index.DirectoryReader")
+            self._reader = DirectoryReader.open(FSDirectory.open(Paths.get(str(self.index_dir))))
+        return self._reader
+
+    def _expansion_terms(self, searcher, query: str) -> list[str]:
+        """Pseudo-relevance feedback terms from the *multi-field* top results.
+
+        Anserini's RM3 builds feedback from a contents-only ranking, which for
+        filename-matched queries pulls in the wrong (noisy) documents. Instead we expand
+        from the documents the user actually sees (multi-field top hits), weighting terms
+        by an RM1 estimate (per-doc relative frequency x doc score) times IDF so generic
+        words don't dominate.
+        """
+        import math
+        from collections import defaultdict
+
+        from pyserini.pyclass import autoclass
+
+        Term = autoclass("org.apache.lucene.index.Term")
+        reader = self._index_reader()
+        term_vectors = reader.termVectors()
+        n_docs = max(1, reader.numDocs())
+
+        qterms = set(_tokens(query))
+        seeds = list(searcher.search_fields(query, self._fields_map(), self.prf_fb_docs))
+        total = sum(h.score for h in seeds) or 1.0
+
+        weights: dict[str, float] = defaultdict(float)
+        for hit in seeds:
+            terms = term_vectors.get(hit.lucene_docid, "contents")
+            if terms is None:
+                continue
+            it = terms.iterator()
+            freqs: dict[str, int] = {}
+            doc_len = 0
+            while True:
+                br = it.next()
+                if br is None:
+                    break
+                term = br.utf8ToString()
+                tf = it.totalTermFreq()
+                freqs[term] = tf
+                doc_len += tf
+            if doc_len == 0:
+                continue
+            w = hit.score / total
+            for term, tf in freqs.items():
+                weights[term] += w * (tf / doc_len)
+
+        def keep(t: str) -> bool:
+            return (
+                t not in qterms
+                and len(t) >= 2
+                and any(ch.isalnum() for ch in t)
+                and t not in _PRF_STOPWORDS
+            )
+
+        # Rank by RM1 weight, then re-rank the best by RM1 x IDF (discriminative terms).
+        ranked = sorted((kv for kv in weights.items() if keep(kv[0])), key=lambda kv: -kv[1])
+        scored = []
+        for term, w in ranked[:50]:
+            df = reader.docFreq(Term("contents", term)) or 1
+            idf = math.log((n_docs + 1) / (df + 0.5))
+            scored.append((term, w * idf))
+        scored.sort(key=lambda kv: -kv[1])
+        return [t for t, _ in scored[: self.prf_fb_terms]]
+
     def search(self, query: str, k: int = 10, prf: bool = False) -> list[Result]:
         searcher = self._ensure_searcher()
-        # BM25 is the default similarity; only toggle RM3 PRF.
+
+        effective_query = query
         if prf:
-            searcher.set_rm3()
-        else:
-            searcher.unset_rm3()
+            try:
+                expansion = self._expansion_terms(searcher, query)
+            except Exception:
+                expansion = []
+            if expansion:
+                # Emphasize the original query so expansion broadens recall without
+                # overriding it; keeps strong filename/exact matches on top.
+                effective_query = " ".join([query] * _PRF_ORIGINAL_WEIGHT + expansion)
 
         # Multi-field BM25 over contents + filename + path (boosted), so queries can
         # match the file name / path, not only the passage text.
-        hits = searcher.search_fields(query, self._fields_map(), k)
+        hits = searcher.search_fields(effective_query, self._fields_map(), k)
         results: list[Result] = []
         for hit in hits:
             raw = json.loads(hit.lucene_document.get("raw"))
