@@ -38,11 +38,13 @@ written to a separate location — `$INFOGREP_HOME/indexes/<name>-<hash>/` (defa
 `~/.infogrep`). Per-directory config is `config.toml` in that index dir (or a global
 `$INFOGREP_HOME/config.toml`). `infogrep status <dir>` prints the exact index location.
 
-**Supported files:** content is extracted from PDF, DOCX, legacy DOC (via macOS
-`textutil`), PPTX, XLSX, and text/code/markup formats; images (PNG/JPG/…) and scanned
-PDFs are OCR'd when `[ingest] ocr = true`. **Every** file is indexed at least by its
-name and path (a content-less stub), so even unsupported binaries are findable by
-filename/path.
+**What gets indexed (default):** documents — PDF, DOC/DOCX (legacy DOC via macOS
+`textutil`), PPT/PPTX, XLS/XLSX, RTF/ODF, and text/markup (`txt md rst tex csv tsv`) —
+plus **images** (PNG/JPG/…) by file name & path (their content only when `[ingest] ocr =
+true`). Dependency/VCS/cache trees (`node_modules`, `.git`, `.venv`, `__pycache__`, …) and
+editor/OS junk (`~$*` Office lock files, `.dropbox.cache`) are skipped. To index **every**
+file instead, set `include = ["**/*"]` — any file with no extractable content is still
+indexed by name/path (a content-less stub), so it's findable by filename/path.
 
 Sparse search is **multi-field**: it matches the query against the passage text *and*
 the file name and path (tokenized), with configurable boosts (`[sparse] field_boosts`),

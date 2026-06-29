@@ -97,15 +97,35 @@ class KnowledgeBaseConfig:
     search_limit: int = 10  # how many search hits to seed graph expansion from
 
 
+# Documents indexed by content (and, where supported, OCR). Code/config files are not
+# included by default — set include = ["**/*"] to index everything.
+DEFAULT_DOC_TYPES = [
+    "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "rtf",
+    "odt", "ods", "odp", "txt", "md", "markdown", "rst", "tex", "csv", "tsv",
+]
+# Images: indexed by file name / path (content only if OCR is enabled).
+DEFAULT_IMAGE_TYPES = [
+    "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "svg", "heic", "heif",
+]
+DEFAULT_INCLUDE = [f"**/*.{ext}" for ext in DEFAULT_DOC_TYPES + DEFAULT_IMAGE_TYPES]
+
+# Skip dependency / VCS / cache trees and editor/OS junk during the walk.
+DEFAULT_EXCLUDE = [
+    ".infogrep/**", "**/.git/**", "**/node_modules/**",
+    "**/.venv/**", "**/venv/**", "**/site-packages/**", "**/__pycache__/**",
+    "**/.cache/**", "**/.tox/**", "**/.mypy_cache/**", "**/.pytest_cache/**",
+    "**/.Trash/**", "**/~$*", "**/.dropbox.cache/**",
+]
+
+
 @dataclass
 class Config:
     """Top-level InfoGrep configuration for one indexed directory."""
 
     target_dir: Path
-    include: list[str] = field(default_factory=lambda: ["**/*"])
-    exclude: list[str] = field(
-        default_factory=lambda: [".infogrep/**", ".git/**", "**/__pycache__/**"]
-    )
+    # Documents + images by default; set include = ["**/*"] to index every file.
+    include: list[str] = field(default_factory=lambda: list(DEFAULT_INCLUDE))
+    exclude: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE))
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     sparse: SparseConfig = field(default_factory=SparseConfig)

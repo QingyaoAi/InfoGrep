@@ -9,6 +9,7 @@ def _cfg(tmp_path):
     cfg = Config.load(tmp_path)
     cfg.sparse.enabled = False
     cfg.dense.enabled = False
+    cfg.include = ["**/*"]  # these tests index arbitrary file types (.py/.bin/etc.)
     return cfg
 
 

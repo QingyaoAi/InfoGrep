@@ -187,6 +187,7 @@ def test_unsupported_binary_findable_by_name(tmp_path):
     (tmp_path / "data" / "archive_zebra.bin").write_bytes(b"\x00\x01\x02\x03\xff")
     cfg = Config.load(tmp_path)
     cfg.dense.enabled = False
+    cfg.include = ["**/*"]  # index the .bin too (not in the doc-only default)
     rep = Indexer(cfg).reindex()
     assert rep.name_only == 1
     # Findable by filename and by directory, even though content isn't extractable.

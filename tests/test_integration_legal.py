@@ -67,6 +67,7 @@ def _legal_paper(root):
 def test_index_and_query_legal_corpus(tmp_path):
     _legal_paper(tmp_path)
     cfg = Config.load(tmp_path)  # default: sparse on, dense off, kb off
+    cfg.include = ["**/*"]  # this test indexes .tex/.bib/.cls + .png (name-only)
 
     report = Indexer(cfg).reindex()
     # 5 with content (3 .tex + .txt + .pdf) + 3 name-only (.png/.bib/.cls) = 8 files.
@@ -97,6 +98,7 @@ def test_index_and_query_legal_corpus(tmp_path):
 def test_hybrid_defaults_to_sparse_only_when_dense_off(tmp_path):
     _legal_paper(tmp_path)
     cfg = Config.load(tmp_path)
+    cfg.include = ["**/*"]
     Indexer(cfg).reindex()
 
     out = SearchEngine(cfg).search_hybrid("legal case retrieval", k=5)
@@ -110,6 +112,7 @@ def test_hybrid_defaults_to_sparse_only_when_dense_off(tmp_path):
 def test_incremental_update_on_legal_corpus(tmp_path):
     _legal_paper(tmp_path)
     cfg = Config.load(tmp_path)
+    cfg.include = ["**/*"]
     Indexer(cfg).reindex()
 
     # Second run with no changes is a no-op.
