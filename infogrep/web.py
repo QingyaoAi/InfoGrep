@@ -56,10 +56,12 @@ PAGE = """<!doctype html>
   button:disabled { opacity:.6; cursor:default; }
   .meta { color:var(--mut); font-size:13px; margin:16px 0 8px; min-height:18px; }
   .hit { background:var(--card); border:1px solid var(--bd); border-radius:10px; padding:13px 15px; margin:10px 0; }
+  .hit.openable { cursor:pointer; }
+  .hit.openable:hover { border-color:var(--acc); background:#1b2330; }
   .hit .top { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .hit .path { font-weight:600; color:#cfe0ff; word-break:break-all; }
-  .hit .path.clickable { cursor:pointer; text-decoration:underline dotted; }
-  .hit .path.clickable:hover { color:var(--acc); }
+  .hit.openable .path { text-decoration:underline dotted; }
+  .hit .reveal { margin-left:auto; font-size:11px; color:var(--mut); white-space:nowrap; }
   .hit .score { color:var(--mut); font-variant-numeric:tabular-nums; }
   .badge { font-size:11px; padding:2px 8px; border-radius:20px; background:#1e2633; color:var(--acc); border:1px solid var(--bd); }
   .snip { margin-top:8px; color:#c7ccd6; white-space:pre-wrap; font-size:13.5px; }
@@ -110,16 +112,17 @@ async function search(ev){
     for(const h of r.results){
       const card=el('div','hit'); const top=el('div','top');
       const ref=(h.abs_path||h.path)+(h.page!=null?(' · p.'+h.page):'');
-      const pathEl=el('span','path', ref);
-      if(h.abs_path){
-        pathEl.classList.add('clickable');
-        pathEl.title='Click to reveal in the file manager';
-        pathEl.addEventListener('click', ()=>reveal(h.abs_path));
-      }
-      top.appendChild(pathEl);
+      top.appendChild(el('span','path', ref));
       top.appendChild(el('span','score','['+Number(h.score).toFixed(3)+']'));
       top.appendChild(el('span','badge', h.retriever));
       if(h.ext) top.appendChild(el('span','badge', h.ext));
+      if(h.abs_path){
+        top.appendChild(el('span','reveal','📂 open folder'));
+        card.classList.add('openable');
+        card.title='Open this file’s folder in Finder';
+        // Click anywhere on the result opens its folder (ignore text selection).
+        card.addEventListener('click', ()=>{ if(!String(window.getSelection())) reveal(h.abs_path); });
+      }
       card.appendChild(top); card.appendChild(el('div','snip', (h.snippet||'').trim()));
       $('results').appendChild(card);
     }
