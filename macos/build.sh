@@ -34,4 +34,4 @@ PLIST
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 
 echo "built $(pwd)/$APP"
-echo "run it:   open $APP        (then press ⌥-Space)"
+echo "run it:   open $APP        (then press ⌘⇧-Space)"

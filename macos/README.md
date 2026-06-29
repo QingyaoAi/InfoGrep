@@ -3,7 +3,7 @@
 A tiny menu-bar app that gives InfoGrep a **Spotlight-style search bar**: press a global
 hotkey, type, and open the matching file.
 
-- **Hotkey:** ⌥-Space (Option+Space) toggles the search panel
+- **Hotkey:** ⌘⇧-Space (Command+Shift+Space) toggles the search panel
 - **↑ / ↓** navigate · **↵** reveal the selected file in Finder · **Esc** dismiss
 - Menu-bar 🔎 icon → Search… / Quit
 
@@ -20,7 +20,7 @@ so the launcher works out of the box.)
 
 ```bash
 ./build.sh            # compiles InfoGrep.app with swiftc (needs the Xcode CLT)
-open InfoGrep.app     # launches the menu-bar agent; press ⌥-Space
+open InfoGrep.app     # launches the menu-bar agent; press ⌘⇧-Space
 ```
 
 ## Customize

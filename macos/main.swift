@@ -1,6 +1,6 @@
 // InfoGrep launcher — a Spotlight-style search bar for the InfoGrep index.
 //
-// A menu-bar (agent) app: press the global hotkey (default ⌥-Space) to pop a search
+// A menu-bar (agent) app: press the global hotkey (default ⌘⇧-Space) to pop a search
 // panel, type to search the local InfoGrep web API, ↑/↓ to navigate, ↵ to reveal the
 // file in Finder, Esc to dismiss. The backend is `infogrep serve` (http://127.0.0.1:7421).
 
@@ -84,7 +84,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🔎"
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Search…  (⌥Space)", action: #selector(togglePanel), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Search…  (⌘⇧Space)", action: #selector(togglePanel), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit InfoGrep", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         for item in menu.items where item.action == #selector(togglePanel) { item.target = self }
@@ -162,8 +162,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
             DispatchQueue.main.async { gController?.togglePanel() }
             return noErr
         }, 1, &spec, nil, nil)
-        // ⌥-Space (Option+Space). Change optionKey/kVK_Space to rebind.
-        RegisterEventHotKey(UInt32(kVK_Space), UInt32(optionKey), id,
+        // ⌘⇧-Space (Command+Shift+Space). Change the modifiers/key code to rebind.
+        RegisterEventHotKey(UInt32(kVK_Space), UInt32(cmdKey | shiftKey), id,
                             GetEventDispatcherTarget(), 0, &hotKeyRef)
     }
 
