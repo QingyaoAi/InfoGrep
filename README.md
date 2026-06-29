@@ -20,6 +20,32 @@ uv run infogrep --help   # show command surface
 uv run pytest            # run tests
 ```
 
+## Install as a Mac app
+
+Clone the repo and run the installer — it sets up the Python backend, builds the menu-bar
+app, starts it (and the search backend) at login, and registers the Claude Code MCP server:
+
+```bash
+git clone https://github.com/QingyaoAi/InfoGrep.git
+cd InfoGrep
+./install.sh          # INFOGREP_SERVE_DIR=/path sets the default folder; INFOGREP_PORT changes the port
+```
+
+Then press **⌘⇧Space** for the Spotlight-style launcher, or open
+<http://127.0.0.1:7421>. Add folders to search from the app (**Index a Folder…**) or the
+web UI (**＋ folder**).
+
+Requirements: [`uv`](https://docs.astral.sh/uv/), Xcode Command Line Tools (`xcode-select
+--install`, for the app), and JDK 21 for sparse search (`brew install openjdk@21`). The app
+is ad-hoc signed, so the **first** launch needs a right-click → **Open** (one time).
+
+Remove everything cleanly:
+
+```bash
+./uninstall.sh            # removes the app, login agents and MCP server (keeps indexes)
+./uninstall.sh --purge    # also delete all indexes (~/.infogrep)
+```
+
 ## Commands
 
 ```bash

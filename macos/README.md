@@ -13,8 +13,9 @@ It's a thin UI client over the InfoGrep web API, so the backend must be running:
 infogrep serve --dir <indexed-dir>        # default http://127.0.0.1:7421
 ```
 
-(On this machine the `com.infogrep.webui` launchd agent already serves the Dropbox index,
-so the launcher works out of the box.)
+The repo's top-level **`./install.sh`** does all of this for you — builds the app, installs
+it to `/Applications`, and runs both the backend and the app at login. This README covers
+building/running it by hand.
 
 ## Build & run
 
@@ -40,24 +41,8 @@ UI has the same controls (a folder dropdown + **＋ folder**).
 
 ## Auto-start at login
 
-Copy the app somewhere stable and load a LaunchAgent that runs it at login:
-
-```bash
-cp -R InfoGrep.app ~/Applications/
-cat > ~/Library/LaunchAgents/com.infogrep.launcher.plist <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.infogrep.launcher</string>
-  <key>ProgramArguments</key><array><string>$HOME/Applications/InfoGrep.app/Contents/MacOS/InfoGrep</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><false/>
-</dict></plist>
-PLIST
-launchctl load ~/Library/LaunchAgents/com.infogrep.launcher.plist
-```
-
-`RunAtLoad` starts it on login; `KeepAlive=false` means it stays quit if you Quit it from
-the menu. (It doesn't appear in System Settings → Login Items because it's an unsigned,
-hand-loaded LaunchAgent, but it runs.) Remove with
-`launchctl unload …/com.infogrep.launcher.plist && rm …/com.infogrep.launcher.plist`.
+Use the top-level **`./install.sh`** (it installs the app to `/Applications` and loads a
+`com.infogrep.launcher` LaunchAgent with `RunAtLoad=true`, `KeepAlive=false` — starts at
+login, stays quit if you Quit it from the menu). **`./uninstall.sh`** removes it. It won't
+appear in System Settings → Login Items because it's an unsigned, hand-loaded LaunchAgent,
+but it runs.
