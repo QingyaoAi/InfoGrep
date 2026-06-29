@@ -144,7 +144,70 @@ status();
 
 
 def _make_handler(directory: Path):
-    engine = SearchEngine(Config.load(directory))  # one engine -> warm searchers
+    import threading
+
+    from .config import index_home
+
+    default_dir = str(Config.load(directory).target_dir)
+    engines: dict[str, SearchEngine] = {}  # dir -> SearchEngine (warm searchers)
+    jobs: dict[str, str] = {}  # dir -> "running" | "done" | "error: ..."
+    state_lock = threading.Lock()
+
+    def engine_for(d: str | None) -> SearchEngine:
+        key = str(Path(d).expanduser().resolve()) if d else default_dir
+        with state_lock:
+            eng = engines.get(key)
+            if eng is None:
+                eng = engines[key] = SearchEngine(Config.load(key))
+            return eng
+
+    def list_indexes() -> list[dict]:
+        from .indexer import Indexer
+
+        out: list[dict] = []
+        root = index_home() / "indexes"
+        if root.is_dir():
+            for d in sorted(root.iterdir()):
+                src = d / "source.txt"
+                if not src.is_file():
+                    continue
+                target = src.read_text().strip()
+                info = {"dir": target, "name": Path(target).name}
+                try:  # fast: read the manifest, don't walk the filesystem
+                    st = Indexer(Config.load(target)).status(check_staleness=False)
+                    info.update(indexed=st.get("indexed", False),
+                                n_files=st.get("n_files"), n_passages=st.get("n_passages"))
+                except Exception:
+                    info["indexed"] = False
+                with state_lock:
+                    info["indexing"] = jobs.get(str(Path(target).resolve())) == "running"
+                out.append(info)
+        return out
+
+    def start_index(d: str) -> dict:
+        target = Path(d).expanduser()
+        if not target.is_dir():
+            return {"ok": False, "error": "not a directory"}
+        key = str(target.resolve())
+        with state_lock:
+            if jobs.get(key) == "running":
+                return {"ok": True, "status": "already running", "dir": key}
+            jobs[key] = "running"
+
+        def run():
+            from .indexer import Indexer
+
+            try:
+                Indexer(Config.load(key)).reindex()
+                result = "done"
+            except Exception as exc:
+                result = f"error: {exc}"
+            with state_lock:
+                jobs[key] = result
+                engines.pop(key, None)  # drop cached engine so search reopens fresh index
+
+        threading.Thread(target=run, daemon=True).start()
+        return {"ok": True, "status": "started", "dir": key}
 
     class Handler(BaseHTTPRequestHandler):
         # Quiet by default (no per-request stderr logging).
@@ -163,14 +226,28 @@ def _make_handler(directory: Path):
 
         def do_GET(self):
             parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
             if parsed.path in ("/", "/index.html"):
                 self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
             elif parsed.path == "/api/status":
-                self._json(self._status())
+                self._json(self._status(qs))
             elif parsed.path == "/api/search":
-                self._json(self._search(parse_qs(parsed.query)))
+                self._json(self._search(qs))
             elif parsed.path == "/api/open":
-                self._json(self._open(parse_qs(parsed.query)))
+                self._json(self._open(qs))
+            elif parsed.path == "/api/indexes":
+                self._json({"indexes": list_indexes(), "default": default_dir})
+            elif parsed.path == "/api/index":  # start (re)indexing a folder
+                self._json(start_index((qs.get("dir", [""])[0]).strip()))
+            else:
+                self._json({"error": "not found"}, code=404)
+
+        # POST also accepts /api/index (the action that changes state).
+        def do_POST(self):
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/index":
+                qs = parse_qs(parsed.query)
+                self._json(start_index((qs.get("dir", [""])[0]).strip()))
             else:
                 self._json({"error": "not found"}, code=404)
 
@@ -178,11 +255,12 @@ def _make_handler(directory: Path):
             path = (qs.get("path", [""])[0]).strip()
             if not path:
                 return {"ok": False, "error": "no path"}
-            # Only reveal files inside the indexed directory (guards against ../ escapes).
-            root = os.path.realpath(str(engine.config.target_dir))
+            # Reveal only files inside a *known* indexed directory (guard against ../).
             real = os.path.realpath(path)
-            if real != root and not real.startswith(root + os.sep):
-                return {"ok": False, "error": "path is outside the indexed directory"}
+            roots = [os.path.realpath(str(e.config.target_dir)) for e in engines.values()]
+            roots.append(os.path.realpath(default_dir))
+            if not any(real == r or real.startswith(r + os.sep) for r in roots):
+                return {"ok": False, "error": "path is outside an indexed directory"}
             if not os.path.exists(real):
                 return {"ok": False, "error": "file not found"}
             try:
@@ -191,15 +269,20 @@ def _make_handler(directory: Path):
             except Exception as exc:
                 return {"ok": False, "error": str(exc)}
 
-        def _status(self) -> dict:
-            info = engine.status()
-            info["dir"] = str(engine.config.target_dir)
+        def _status(self, qs: dict) -> dict:
+            d = (qs.get("dir", [None])[0])
+            eng = engine_for(d)
+            info = eng.status()
+            info["dir"] = str(eng.config.target_dir)
+            with state_lock:
+                info["indexing"] = jobs.get(str(eng.config.target_dir)) == "running"
             return info
 
         def _search(self, qs: dict) -> dict:
             q = (qs.get("q", [""])[0]).strip()
             if not q:
                 return {"error": "empty query", "results": []}
+            eng = engine_for(qs.get("dir", [None])[0])
             mode = qs.get("mode", ["hybrid"])[0]
             try:
                 k = max(1, min(50, int(qs.get("k", ["10"])[0])))
@@ -208,18 +291,18 @@ def _make_handler(directory: Path):
             prf = qs.get("prf", ["0"])[0] in ("1", "true", "on")
             try:
                 if mode == "hybrid":
-                    out = engine.search_hybrid(q, k=k, prf=prf)
+                    out = eng.search_hybrid(q, k=k, prf=prf)
                     return {
                         "results": [r.to_dict() for r in out.results],
                         "used": out.used,
                         "skipped": out.skipped,
                     }
                 if mode == "sparse":
-                    hits = engine.search_sparse(q, k=k, prf=prf)
+                    hits = eng.search_sparse(q, k=k, prf=prf)
                 elif mode == "dense":
-                    hits = engine.search_dense(q, k=k)
+                    hits = eng.search_dense(q, k=k)
                 elif mode == "kb":
-                    hits = engine.search_kb(q, k=k)
+                    hits = eng.search_kb(q, k=k)
                 else:
                     return {"error": f"unknown mode: {mode}", "results": []}
                 return {"results": [r.to_dict() for r in hits], "used": [mode], "skipped": {}}

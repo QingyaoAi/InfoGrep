@@ -31,13 +31,14 @@ struct SearchResult {
     var filename: String { (path as NSString).lastPathComponent }
 }
 
-func apiSearch(_ query: String, completion: @escaping ([SearchResult]) -> Void) {
+func apiSearch(_ query: String, dir: String?, completion: @escaping ([SearchResult]) -> Void) {
     guard var comp = URLComponents(string: "\(kAPIBase)/api/search") else { completion([]); return }
     comp.queryItems = [
         URLQueryItem(name: "q", value: query),
         URLQueryItem(name: "mode", value: kSearchMode),
         URLQueryItem(name: "k", value: String(kMaxResults)),
     ]
+    if let dir, !dir.isEmpty { comp.queryItems?.append(URLQueryItem(name: "dir", value: dir)) }
     guard let url = comp.url else { completion([]); return }
     var req = URLRequest(url: url)
     req.timeoutInterval = 10
@@ -61,9 +62,11 @@ func apiSearch(_ query: String, completion: @escaping ([SearchResult]) -> Void) 
     }.resume()
 }
 
+struct IndexEntry { let name: String; let dir: String; let indexing: Bool }
+
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
-                          NSTableViewDataSource, NSTableViewDelegate {
+                          NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var panel: NSPanel!
     var field: NSTextField!
@@ -72,11 +75,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     var hotKeyRef: EventHotKeyRef?
     var seq = 0
     var debounce: DispatchWorkItem?
+    // Which index to search (nil = the server's default). Persisted across launches.
+    var indexes: [IndexEntry] = []
+    var selectedDir: String? = UserDefaults.standard.string(forKey: "infogrep.selectedDir")
+
+    func currentFolderName() -> String {
+        if let d = selectedDir, !d.isEmpty { return (d as NSString).lastPathComponent }
+        return "InfoGrep"
+    }
+    func updatePlaceholder() { field?.placeholderString = "Search \(currentFolderName())…" }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         setupStatusItem()
         setupPanel()
         registerHotKey()
+        refreshIndexes()
     }
 
     // MARK: menu bar
@@ -84,11 +97,101 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🔎"
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Search…  (⌘⇧Space)", action: #selector(togglePanel), keyEquivalent: ""))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit InfoGrep", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        for item in menu.items where item.action == #selector(togglePanel) { item.target = self }
+        menu.delegate = self  // refresh the index list each time the menu opens
         statusItem.menu = menu
+        rebuildMenu()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { refreshIndexes() }
+
+    func rebuildMenu() {
+        guard let menu = statusItem?.menu else { return }
+        menu.removeAllItems()
+        let header = NSMenuItem(title: "Search in:", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        if indexes.isEmpty {
+            let none = NSMenuItem(title: "   (no indexes yet)", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+        }
+        for idx in indexes {
+            let title = "   " + idx.name + (idx.indexing ? "  (indexing…)" : "")
+            let item = NSMenuItem(title: title, action: #selector(selectIndex(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = idx.dir
+            item.state = (idx.dir == selectedDir) ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let add = NSMenuItem(title: "Index a Folder…", action: #selector(indexFolder), keyEquivalent: "i")
+        add.target = self
+        menu.addItem(add)
+        menu.addItem(.separator())
+        let search = NSMenuItem(title: "Search…  (⌘⇧Space)", action: #selector(togglePanel), keyEquivalent: "")
+        search.target = self
+        menu.addItem(search)
+        menu.addItem(NSMenuItem(title: "Quit InfoGrep",
+                                action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    func refreshIndexes() {
+        guard let url = URL(string: "\(kAPIBase)/api/indexes") else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            var list: [IndexEntry] = []
+            var defaultDir: String?
+            if let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                defaultDir = obj["default"] as? String
+                if let arr = obj["indexes"] as? [[String: Any]] {
+                    for i in arr where (i["dir"] as? String) != nil {
+                        let dir = i["dir"] as! String
+                        list.append(IndexEntry(
+                            name: (i["name"] as? String) ?? (dir as NSString).lastPathComponent,
+                            dir: dir,
+                            indexing: (i["indexing"] as? Bool) ?? false))
+                    }
+                }
+            }
+            DispatchQueue.main.async {
+                self.indexes = list
+                if self.selectedDir == nil { self.selectedDir = defaultDir }
+                self.rebuildMenu()
+                self.updatePlaceholder()
+            }
+        }.resume()
+    }
+
+    @objc func selectIndex(_ sender: NSMenuItem) {
+        guard let dir = sender.representedObject as? String else { return }
+        selectedDir = dir
+        UserDefaults.standard.set(dir, forKey: "infogrep.selectedDir")
+        rebuildMenu()
+        updatePlaceholder()
+    }
+
+    @objc func indexFolder() {
+        let p = NSOpenPanel()
+        p.canChooseDirectories = true
+        p.canChooseFiles = false
+        p.allowsMultipleSelection = false
+        p.prompt = "Index"
+        p.message = "Choose a folder to index with InfoGrep"
+        NSApp.activate(ignoringOtherApps: true)
+        guard p.runModal() == .OK, let url = p.url else { return }
+        let dir = url.path
+        guard var comp = URLComponents(string: "\(kAPIBase)/api/index") else { return }
+        comp.queryItems = [URLQueryItem(name: "dir", value: dir)]
+        guard let u = comp.url else { return }
+        var req = URLRequest(url: u)
+        req.httpMethod = "POST"
+        URLSession.shared.dataTask(with: req) { _, _, _ in
+            DispatchQueue.main.async {
+                self.selectedDir = dir
+                UserDefaults.standard.set(dir, forKey: "infogrep.selectedDir")
+                self.refreshIndexes()  // will show "(indexing…)" until it finishes
+                self.updatePlaceholder()
+            }
+        }.resume()
     }
 
     // MARK: panel UI
@@ -179,6 +282,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(field)
         field.stringValue = ""
+        updatePlaceholder()
         results = []
         table.reloadData()
     }
@@ -192,8 +296,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         if q.isEmpty { results = []; table.reloadData(); return }
         seq += 1
         let mySeq = seq
+        let dir = selectedDir
         let work = DispatchWorkItem { [weak self] in
-            apiSearch(q) { res in
+            apiSearch(q, dir: dir) { res in
                 guard let self, mySeq == self.seq else { return }
                 self.results = res
                 self.table.reloadData()

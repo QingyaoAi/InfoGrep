@@ -2,12 +2,27 @@
 
 import json
 import threading
+import time
+import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
 
 from infogrep.config import Config
 from infogrep.indexer import Indexer
 from infogrep.web import PAGE, _make_handler
+
+_LIGHT_CONFIG = "[sparse]\nenabled = false\n[dense]\nenabled = true\nembedder = 'hash'\n"
+
+
+def _make_indexed(dirpath, files):
+    dirpath.mkdir(parents=True, exist_ok=True)
+    for name, content in files.items():
+        (dirpath / name).write_text(content)
+    cfg = Config.load(dirpath)
+    cfg.index_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index_dir / "config.toml").write_text(_LIGHT_CONFIG)
+    Indexer(Config.load(dirpath)).reindex()
+    return dirpath
 
 
 def _start(directory):
@@ -102,5 +117,51 @@ def test_search_api(tmp_path):
             assert False, "expected 404"
         except urllib.error.HTTPError as e:
             assert e.code == 404
+    finally:
+        httpd.shutdown()
+
+
+def _q(port, path):
+    return json.loads(_get(port, path)[1])
+
+
+def test_list_indexes_and_dir_scoped_search(tmp_path):
+    a = _make_indexed(tmp_path / "alpha", {"berry.txt": "blueberries rich in antioxidants"})
+    b = _make_indexed(tmp_path / "beta", {"car.txt": "the sedan has a strong engine"})
+    httpd, port = _start(a)  # server's default dir = alpha
+    try:
+        names = {i["name"] for i in _q(port, "/api/indexes")["indexes"]}
+        assert {"alpha", "beta"} <= names
+        # default (alpha)
+        ra = _q(port, "/api/search?q=antioxidants&mode=dense")
+        assert ra["results"][0]["path"] == "berry.txt"
+        # dir-scoped (beta)
+        rb = _q(port, "/api/search?q=engine&mode=dense&dir=" + urllib.parse.quote(str(b)))
+        assert rb["results"][0]["path"] == "car.txt"
+    finally:
+        httpd.shutdown()
+
+
+def test_index_endpoint_builds_a_new_folder(tmp_path):
+    c = tmp_path / "gamma"
+    c.mkdir()
+    (c / "memo.txt").write_text("a uniquezorptoken appears here")
+    cfg = Config.load(c)
+    cfg.index_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index_dir / "config.toml").write_text(_LIGHT_CONFIG)
+
+    httpd, port = _start(tmp_path)
+    try:
+        started = _q(port, "/api/index?dir=" + urllib.parse.quote(str(c)))
+        assert started["ok"]
+        st = {}
+        for _ in range(80):
+            st = _q(port, "/api/status?dir=" + urllib.parse.quote(str(c)))
+            if st.get("indexed") and not st.get("indexing"):
+                break
+            time.sleep(0.1)
+        assert st.get("indexed") and st.get("n_files") == 1
+        res = _q(port, "/api/search?q=uniquezorptoken&mode=dense&dir=" + urllib.parse.quote(str(c)))
+        assert res["results"][0]["path"] == "memo.txt"
     finally:
         httpd.shutdown()
