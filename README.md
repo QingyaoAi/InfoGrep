@@ -1,5 +1,7 @@
 # InfoGrep
 
+[![CI](https://github.com/QingyaoAi/InfoGrep/actions/workflows/ci.yml/badge.svg)](https://github.com/QingyaoAi/InfoGrep/actions/workflows/ci.yml)
+
 A local-first tool that searches the **actual content** of every file in a directory and
 exposes **sparse**, **dense**, and **knowledge-base** retrieval to coding agents
 (Claude Code, Codex) via an MCP server — separately or fused.
@@ -45,6 +47,9 @@ Remove everything cleanly:
 ./uninstall.sh            # removes the app, login agents and MCP server (keeps indexes)
 ./uninstall.sh --purge    # also delete all indexes (~/.infogrep)
 ```
+
+`make install` / `make uninstall` / `make purge` are equivalent wrappers; run `make` to
+list all targets (`sync`, `app`, `test`, `lint`, …).
 
 ## Commands
 
