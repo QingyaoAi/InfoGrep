@@ -10,12 +10,25 @@ this is a local test/debug surface, not a public service.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .config import Config
 from .engine import SearchEngine
+
+
+def _reveal_in_file_manager(path: str) -> None:
+    """Open the file's containing folder in the OS file manager, selecting the file."""
+    if sys.platform == "darwin":
+        subprocess.run(["open", "-R", path], check=False)
+    elif sys.platform.startswith("win"):
+        subprocess.run(["explorer", "/select,", path], check=False)
+    else:  # Linux / other: open the folder (selecting a file isn't portable)
+        subprocess.run(["xdg-open", os.path.dirname(path)], check=False)
 
 # Uncommon, easy-to-type default port (in the dynamic range, unlikely to collide).
 DEFAULT_PORT = 7421
@@ -45,6 +58,8 @@ PAGE = """<!doctype html>
   .hit { background:var(--card); border:1px solid var(--bd); border-radius:10px; padding:13px 15px; margin:10px 0; }
   .hit .top { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .hit .path { font-weight:600; color:#cfe0ff; word-break:break-all; }
+  .hit .path.clickable { cursor:pointer; text-decoration:underline dotted; }
+  .hit .path.clickable:hover { color:var(--acc); }
   .hit .score { color:var(--mut); font-variant-numeric:tabular-nums; }
   .badge { font-size:11px; padding:2px 8px; border-radius:20px; background:#1e2633; color:var(--acc); border:1px solid var(--bd); }
   .snip { margin-top:8px; color:#c7ccd6; white-space:pre-wrap; font-size:13.5px; }
@@ -95,7 +110,13 @@ async function search(ev){
     for(const h of r.results){
       const card=el('div','hit'); const top=el('div','top');
       const ref=(h.abs_path||h.path)+(h.page!=null?(' · p.'+h.page):'');
-      top.appendChild(el('span','path', ref));
+      const pathEl=el('span','path', ref);
+      if(h.abs_path){
+        pathEl.classList.add('clickable');
+        pathEl.title='Click to reveal in the file manager';
+        pathEl.addEventListener('click', ()=>reveal(h.abs_path));
+      }
+      top.appendChild(pathEl);
       top.appendChild(el('span','score','['+Number(h.score).toFixed(3)+']'));
       top.appendChild(el('span','badge', h.retriever));
       if(h.ext) top.appendChild(el('span','badge', h.ext));
@@ -105,6 +126,12 @@ async function search(ev){
     if(!r.results.length) $('results').appendChild(el('div','meta','No matches.'));
   }catch(e){ $('meta').innerHTML=''; $('meta').appendChild(el('span','err',String(e))); }
   finally{ $('go').disabled=false; }
+}
+async function reveal(path){
+  try{
+    const res=await (await fetch('/api/open?path='+encodeURIComponent(path))).json();
+    if(!res.ok){ $('meta').textContent='Could not open: '+(res.error||'error'); }
+  }catch(e){ $('meta').textContent='Could not open: '+e; }
 }
 $('f').addEventListener('submit', search);
 status();
@@ -139,8 +166,27 @@ def _make_handler(directory: Path):
                 self._json(self._status())
             elif parsed.path == "/api/search":
                 self._json(self._search(parse_qs(parsed.query)))
+            elif parsed.path == "/api/open":
+                self._json(self._open(parse_qs(parsed.query)))
             else:
                 self._json({"error": "not found"}, code=404)
+
+        def _open(self, qs: dict) -> dict:
+            path = (qs.get("path", [""])[0]).strip()
+            if not path:
+                return {"ok": False, "error": "no path"}
+            # Only reveal files inside the indexed directory (guards against ../ escapes).
+            root = os.path.realpath(str(engine.config.target_dir))
+            real = os.path.realpath(path)
+            if real != root and not real.startswith(root + os.sep):
+                return {"ok": False, "error": "path is outside the indexed directory"}
+            if not os.path.exists(real):
+                return {"ok": False, "error": "file not found"}
+            try:
+                _reveal_in_file_manager(real)
+                return {"ok": True}
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
 
         def _status(self) -> dict:
             info = engine.status()

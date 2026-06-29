@@ -56,6 +56,33 @@ def test_status_api(tmp_path):
         httpd.shutdown()
 
 
+def test_open_api_reveals_and_validates_path(tmp_path, monkeypatch):
+    import infogrep.web as web
+
+    revealed = []
+    monkeypatch.setattr(web, "_reveal_in_file_manager", lambda p: revealed.append(p))
+    _indexed_dir(tmp_path)
+    httpd, port = _start(tmp_path)
+    try:
+        # A file inside the indexed dir -> revealed.
+        target = str(tmp_path / "berry.txt")
+        _, body = _get(port, "/api/open?path=" + urllib.parse.quote(target))
+        assert json.loads(body)["ok"] is True
+        assert revealed == [target]
+
+        # A path outside the indexed dir is rejected (no reveal).
+        _, body = _get(port, "/api/open?path=" + urllib.parse.quote("/etc/hosts"))
+        out = json.loads(body)
+        assert out["ok"] is False and "outside" in out["error"]
+        assert revealed == [target]  # unchanged
+
+        # A non-existent file under the dir is reported.
+        _, body = _get(port, "/api/open?path=" + urllib.parse.quote(str(tmp_path / "nope.txt")))
+        assert json.loads(body)["ok"] is False
+    finally:
+        httpd.shutdown()
+
+
 def test_search_api(tmp_path):
     httpd, port = _start(_indexed_dir(tmp_path))
     try:
