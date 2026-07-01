@@ -104,6 +104,7 @@ class KnowledgeBaseConfig:
 DEFAULT_DOC_TYPES = [
     "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "rtf",
     "odt", "ods", "odp", "txt", "md", "markdown", "rst", "tex", "csv", "tsv",
+    "json", "jsonl",
 ]
 # Images: indexed by file name / path (content only if OCR is enabled).
 DEFAULT_IMAGE_TYPES = [
