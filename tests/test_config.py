@@ -14,6 +14,7 @@ def test_index_is_outside_the_target(tmp_path: Path):
     assert cfg.sparse.enabled is True
     assert cfg.dense.enabled is False  # dense is opt-in
     assert cfg.kb.enabled is False
+    assert cfg.graph.enabled is True  # metadata graph is cheap, on by default
 
 
 def test_config_toml_overrides_defaults(tmp_path: Path):
@@ -30,6 +31,9 @@ def test_config_toml_overrides_defaults(tmp_path: Path):
                 "[kb]",
                 "enabled = true",
                 "vault = 'My Vault'",
+                "[graph]",
+                "enabled = false",
+                "hops = 2",
             ]
         )
     )
@@ -40,6 +44,8 @@ def test_config_toml_overrides_defaults(tmp_path: Path):
     assert cfg.dense.embedder == "harrier"
     assert cfg.kb.enabled is True
     assert cfg.kb.vault == "My Vault"
+    assert cfg.graph.enabled is False
+    assert cfg.graph.hops == 2
 
 
 def test_global_config_applies_then_per_index_overrides(tmp_path: Path):

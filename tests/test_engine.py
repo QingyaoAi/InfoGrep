@@ -36,6 +36,7 @@ def test_hybrid_default_runs_only_enabled(tmp_path):
     cfg.dense.embedder = "hash"
     cfg.sparse.enabled = False
     cfg.kb.enabled = False
+    cfg.graph.enabled = False
     Indexer(cfg).reindex()
 
     out = SearchEngine(cfg).search_hybrid("reciprocal rank fusion", k=3)
@@ -69,6 +70,7 @@ def test_hybrid_fuses_sparse_and_dense(tmp_path):
     cfg = Config.load(tmp_path)
     cfg.dense.enabled = True
     cfg.dense.embedder = "hash"  # keep it fast; fusion logic is what we test
+    cfg.graph.enabled = False
     Indexer(cfg).reindex()
 
     out = SearchEngine(cfg).search_hybrid("reciprocal rank fusion retrieval", k=3)

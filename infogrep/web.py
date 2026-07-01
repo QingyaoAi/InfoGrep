@@ -83,6 +83,7 @@ PAGE = """<!doctype html>
       <option value="sparse">sparse</option>
       <option value="dense">dense</option>
       <option value="kb">kb</option>
+      <option value="graph">graph</option>
     </select>
     <input type="number" id="k" value="10" min="1" max="50" title="number of results" style="width:64px"/>
     <label class="chk"><input type="checkbox" id="prf"/> PRF</label>
@@ -333,6 +334,8 @@ def _make_handler(directory: Path):
                     hits = eng.search_dense(q, k=k)
                 elif mode == "kb":
                     hits = eng.search_kb(q, k=k)
+                elif mode == "graph":
+                    hits = eng.search_graph(q, k=k)
                 else:
                     return {"error": f"unknown mode: {mode}", "results": []}
                 return {"results": [r.to_dict() for r in hits], "used": [mode], "skipped": {}}

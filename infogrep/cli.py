@@ -70,7 +70,7 @@ def search(
     query: str = typer.Argument(..., help="Search query."),
     directory: Path = typer.Option(Path.cwd(), "--dir", "-d", help="Indexed directory."),
     k: int = typer.Option(10, "--k", help="Number of results."),
-    mode: str = typer.Option("hybrid", "--mode", "-m", help="hybrid | sparse | dense | kb."),
+    mode: str = typer.Option("hybrid", "--mode", "-m", help="hybrid | sparse | dense | kb | graph."),
     prf: bool = typer.Option(False, "--prf", help="RM3 pseudo-relevance feedback (sparse)."),
 ) -> None:
     """Query indexed content."""
@@ -92,6 +92,8 @@ def search(
                 typer.echo(f"[infogrep] skipped {name}: {reason}")
         elif mode == "kb":
             results = engine.search_kb(query, k=k)
+        elif mode == "graph":
+            results = engine.search_graph(query, k=k)
         else:
             typer.echo(f"[infogrep] unknown mode: {mode}", err=True)
             raise typer.Exit(code=2)

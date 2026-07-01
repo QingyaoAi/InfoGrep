@@ -99,6 +99,24 @@ class KnowledgeBaseConfig:
     search_limit: int = 10  # how many search hits to seed graph expansion from
 
 
+@dataclass
+class GraphConfig:
+    """Metadata knowledge-graph over folder/file structure.
+
+    Built from file *paths and names only* (never content) on every reindex, and
+    materialized as an Obsidian-compatible vault of folder notes under the index's
+    ``graph_vault/`` side-car dir, browsable in Obsidian if you open it there. Hybrid
+    search uses it (no Obsidian app required — InfoGrep reads its own graph directly) to
+    pull in sibling files from the folder(s) whose name/contents best match the query,
+    not only files whose own content matched. Cheap (pure path manipulation, no model),
+    so on by default.
+    """
+
+    enabled: bool = True
+    hops: int = 1  # folder hops to expand from a matched folder (parent/children/siblings)
+    max_folders: int = 5  # top-scoring folders to expand into file candidates per query
+
+
 # Documents indexed by content (and, where supported, OCR). Code/config files are not
 # included by default — set include = ["**/*"] to index everything.
 DEFAULT_DOC_TYPES = [
@@ -134,6 +152,7 @@ class Config:
     sparse: SparseConfig = field(default_factory=SparseConfig)
     dense: DenseConfig = field(default_factory=DenseConfig)
     kb: KnowledgeBaseConfig = field(default_factory=KnowledgeBaseConfig)
+    graph: GraphConfig = field(default_factory=GraphConfig)
 
     @property
     def index_dir(self) -> Path:
@@ -155,6 +174,16 @@ class Config:
     @property
     def cache_dir(self) -> Path:
         return self.index_dir / "cache"
+
+    @property
+    def graph_vault_dir(self) -> Path:
+        """Obsidian-compatible vault of folder notes (metadata graph), for browsing."""
+        return self.index_dir / "graph_vault"
+
+    @property
+    def graph_json_path(self) -> Path:
+        """Compact JSON form of the same graph, read directly by the graph retriever."""
+        return self.index_dir / "graph.json"
 
     @classmethod
     def load(cls, target_dir: str | Path) -> "Config":
@@ -183,4 +212,6 @@ class Config:
             base.dense = DenseConfig(**{**asdict(base.dense), **data["dense"]})
         if "kb" in data:
             base.kb = KnowledgeBaseConfig(**{**asdict(base.kb), **data["kb"]})
+        if "graph" in data:
+            base.graph = GraphConfig(**{**asdict(base.graph), **data["graph"]})
         return base

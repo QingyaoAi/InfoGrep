@@ -40,6 +40,7 @@ def _cfg(tmp_path, **kb):
     cfg.kb.enabled = True
     cfg.sparse.enabled = False
     cfg.dense.enabled = False
+    cfg.graph.enabled = False
     for key, val in kb.items():
         setattr(cfg.kb, key, val)
     return cfg

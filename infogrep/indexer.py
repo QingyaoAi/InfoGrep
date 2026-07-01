@@ -196,6 +196,7 @@ class Indexer:
             report.n_files = stats["n_files"]
             report.n_passages = stats["n_passages"]
 
+            self._build_graph(manifest, report, full)
             self._build_backends(manifest, report, full, removed_ids, changed_paths)
 
         self._hash_cache: dict[Path, str] = {}
@@ -284,6 +285,25 @@ class Indexer:
         return Passage(
             passage_id=f"{rel}#0", doc_id=rel, path=rel, ordinal=0, text=text, page=None, offset=0
         )
+
+    def _build_graph(self, manifest: Manifest, report: IndexReport, full: bool) -> None:
+        """Rebuild the folder/filename metadata graph (see ``ingest.graph``).
+
+        Metadata-only (paths and names, never content), so a full rebuild is cheap;
+        only worth skipping when nothing structural changed since the last run.
+        """
+        cfg = self.config
+        if not cfg.graph.enabled:
+            return
+        structural_change = report.added > 0 or report.deleted > 0
+        if not (full or not cfg.graph_json_path.is_file() or structural_change):
+            return
+        try:
+            from .ingest.graph import build_graph
+
+            build_graph(cfg.index_dir, manifest.all_paths())
+        except Exception as exc:  # never let a graph-build issue lose the manifest
+            report.errors.append(f"graph: {exc}")
 
     def _build_backends(
         self,

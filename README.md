@@ -23,9 +23,12 @@ should do with the output. InfoGrep fixes all three:
 
 - **Reads real content.** PDFs (including scanned ones, via OCR), Word/PowerPoint/Excel,
   legacy `.doc`, RTF/OpenDocument, plain text and markup, and JSON — not just file names.
-- **Three complementary retrieval modes, fused.** Exact-keyword (BM25), semantic
-  (embeddings), and knowledge-graph (Obsidian) — combined with reciprocal rank fusion, or
-  called independently.
+- **Four complementary retrieval modes, fused.** Exact-keyword (BM25), semantic
+  (embeddings), an Obsidian knowledge-base graph, and a folder/filename metadata graph —
+  combined with reciprocal rank fusion, or called independently.
+- **Folder-aware, not just file-aware.** A metadata graph over your folder structure (paths
+  and file names only, never content) lets hybrid search also surface sibling files from the
+  *folder* a hit lives in — not only files whose own content matched the query.
 - **Built for agents, not just humans.** An MCP server exposes each retriever as a tool with
   structured, citable results (`path`, `page`, `snippet`, `score`), so Claude Code, Codex, or
   any MCP-aware agent can search your files as naturally as it reads them.
@@ -40,18 +43,20 @@ should do with the output. InfoGrep fixes all three:
                     ┌───────────────────────────────────────────────┐
                     │        MCP server  /  CLI  /  browser UI       │
                     │  search_sparse · search_dense · search_kb      │
-                    │  search_hybrid · index_status · reindex        │
+                    │  search_graph · search_hybrid                  │
+                    │  index_status · reindex                        │
                     └───────────────────────┬─────────────────────────┘
                                             │
-              ┌──────────────────────────────┼──────────────────────────────┐
-              │                              │                              │
-       ┌──────▼──────┐               ┌───────▼───────┐               ┌──────▼──────┐
-       │   Sparse    │               │     Dense      │               │  Knowledge  │
-       │  (Pyserini  │               │  (embeddings   │               │    base     │
-       │   BM25,     │               │   + Zvec ANN)  │               │  (Obsidian  │
-       │  bilingual) │               │  off by default│               │   graph)    │
-       └──────┬──────┘               └───────┬───────┘               └──────┬──────┘
-              └───────────────────┬───────────┴──────────────────────────────┘
+        ┌───────────────┬───────────────────┼────────────────┬───────────────┐
+        │                │                   │                │
+ ┌──────▼──────┐  ┌──────▼──────┐    ┌───────▼──────┐  ┌───────▼──────┐
+ │   Sparse    │  │    Dense    │    │  Knowledge   │  │    Folder    │
+ │  (Pyserini  │  │ (embeddings │    │     base     │  │   metadata   │
+ │    BM25,    │  │ + Zvec ANN, │    │  (Obsidian   │  │    graph     │
+ │  bilingual) │  │off by       │    │ graph, live  │  │ (paths only, │
+ │             │  │ default)    │    │    vault)    │  │ no content)  │
+ └──────┬──────┘  └──────┬──────┘    └───────┬──────┘  └───────┬──────┘
+        └───────────────┴───────────────────┴────────────────┘
                                   │  reciprocal rank fusion
                            ┌──────▼──────┐
                            │   Fusion    │
@@ -66,6 +71,7 @@ should do with the output. InfoGrep fixes all three:
       │  Ingestion pipeline                                     │
       │  walk (include/exclude globs) → extract (per file type) │
       │       → chunk into passages → index (sparse/dense)      │
+      │       → build folder/filename metadata graph             │
       │       → manifest.sqlite tracks hash/mtime for deltas    │
       └──────────────────────────────────────────────────────────┘
 ```
@@ -79,11 +85,16 @@ should do with the output. InfoGrep fixes all three:
 4. **Index** passages into a **manifest** (SQLite: path → hash/mtime/size, for change
    detection) plus **sparse** (Lucene/BM25 via Pyserini) and, optionally, **dense**
    (embeddings in a Zvec vector store) indexes.
-5. **Retrieve** via any of the three retrievers, or all of them fused with **reciprocal rank
+5. **Build the folder/filename metadata graph** from every indexed file's *path* (never its
+   content): a folder tree materialized as an Obsidian-compatible vault of linked notes
+   (browsable in Obsidian) plus a compact JSON form used for fast lookups.
+6. **Retrieve** via any of the four retrievers, or all of them fused with **reciprocal rank
    fusion (RRF)** — no tuning required, and each retriever can be skipped gracefully if it
-   isn't enabled or available.
-6. **Re-index incrementally**: a manifest diff classifies files as added/modified/deleted, so
-   only the delta is re-extracted, re-chunked, and re-indexed — a no-op run does nothing.
+   isn't enabled or available. The metadata graph lets a hit's *folder* pull in sibling files
+   too, not only files whose own content matched.
+7. **Re-index incrementally**: a manifest diff classifies files as added/modified/deleted, so
+   only the delta is re-extracted, re-chunked, and re-indexed — a no-op run does nothing (the
+   metadata graph rebuilds whenever files are added/removed — cheap, since it's just paths).
 
 The index is **never** written into the folder you're searching — it lives under
 `$INFOGREP_HOME/indexes/<name>-<hash>/` (default `~/.infogrep`), so your directory's
@@ -152,7 +163,7 @@ targets (`sync`, `app`, `test`, `lint`, …).
 
 ```bash
 infogrep index <dir>                 # build / update the index for a directory
-infogrep search <query> -d <dir>     # query (modes: hybrid [default] | sparse | dense | kb)
+infogrep search <query> -d <dir>     # query (modes: hybrid [default] | sparse | dense | kb | graph)
 infogrep search <query> --prf        # sparse query expansion (RM3)
 infogrep status <dir>                # index status + staleness (pending changes)
 infogrep mcp --dir <dir>             # run the MCP server (stdio) for coding agents
@@ -173,11 +184,11 @@ Register InfoGrep as an MCP server so an agent can search your files as a tool c
 claude mcp add infogrep -- uv run infogrep mcp --dir /path/to/your/project
 ```
 
-Tools exposed: `search_sparse`, `search_dense`, `search_kb`, `search_hybrid`,
-`index_status`, `reindex`. Each search tool returns `{"results": [...]}` where every result
-carries `path`, `page`, `snippet`, `score`, and `retriever` for easy citation.
-`search_hybrid` (recommended) fuses whichever retrievers are enabled and reports which were
-`used` vs. `skipped` (and why).
+Tools exposed: `search_sparse`, `search_dense`, `search_kb`, `search_graph`,
+`search_hybrid`, `index_status`, `reindex`. Each search tool returns `{"results": [...]}`
+where every result carries `path`, `page`, `snippet`, `score`, and `retriever` for easy
+citation. `search_hybrid` (recommended) fuses whichever retrievers are enabled and reports
+which were `used` vs. `skipped` (and why).
 
 ### Browser UI
 
@@ -185,9 +196,27 @@ carries `path`, `page`, `snippet`, `score`, and `retriever` for easy citation.
 infogrep serve --dir <dir>    # http://127.0.0.1:7421 by default
 ```
 
-A search box, a mode selector (hybrid/sparse/dense/kb), result snippets with path/page/
+A search box, a mode selector (hybrid/sparse/dense/kb/graph), result snippets with path/page/
 score, folder management (add/switch indexed directories), and a JSON API at
 `/api/search` and `/api/status`. Bound to localhost only.
+
+### Folder/filename metadata graph
+
+On every reindex, InfoGrep builds a knowledge graph over your folder structure — each file's
+*path and name only, never its content* — and materializes it as an Obsidian-compatible vault
+of linked folder notes under the index's `graph_vault/` side-car directory (open it in
+Obsidian to browse, if you like). `search_graph` matches a query against folder/file *names*,
+then expands to neighboring folders (parent, children, siblings) so files that live in the
+most relevant folder(s) surface too — not just files whose own name/content matched. It
+participates in `search_hybrid` automatically, letting one hit pull in its co-located
+siblings. On by default (it's cheap — just path manipulation, no model or JVM):
+
+```toml
+[graph]
+enabled = true    # set false to disable
+hops = 1          # folder hops to expand from a matched folder (parent/children/siblings)
+max_folders = 5   # top-scoring folders to expand into file candidates per query
+```
 
 ### Knowledge base (Obsidian vault)
 
@@ -260,10 +289,15 @@ vault = ""      # Obsidian vault name; empty -> the CLI's active vault
 cli = "obsidian"
 hops = 1
 search_limit = 10
+
+[graph]
+enabled = true    # folder/filename metadata graph; cheap, on by default
+hops = 1          # folder hops to expand from a matched folder
+max_folders = 5   # top-scoring folders to expand into file candidates per query
 ```
 
-With dense off (the default), `hybrid` simply runs sparse (plus the knowledge base, if
-enabled) — no model download needed until you opt in.
+With dense off (the default), `hybrid` simply runs sparse and the metadata graph (plus the
+knowledge base, if enabled) — no model download needed until you opt in.
 
 ## Development
 

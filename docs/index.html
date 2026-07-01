@@ -4,11 +4,11 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>InfoGrep — local-first content search for you and your coding agent</title>
-<meta name="description" content="InfoGrep indexes the actual content of your files — PDFs, Office docs, notes, images — and exposes sparse, dense, and knowledge-base search to coding agents via MCP, plus a CLI and browser UI. Local-first, never modifies your files." />
+<meta name="description" content="InfoGrep indexes the actual content of your files — PDFs, Office docs, notes, images — and exposes sparse, dense, knowledge-base, and folder-metadata-graph search to coding agents via MCP, plus a CLI and browser UI. Local-first, never modifies your files." />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2245%22 fill=%22%230b0d12%22/><circle cx=%2250%22 cy=%2250%22 r=%2222%22 fill=%22none%22 stroke=%22%236ee7b7%22 stroke-width=%228%22/><line x1=%2266%22 y1=%2266%22 x2=%2288%22 y2=%2288%22 stroke=%22%237dd3fc%22 stroke-width=%229%22 stroke-linecap=%22round%22/></svg>" />
 <link rel="stylesheet" href="styles.css" />
 <meta property="og:title" content="InfoGrep — local-first content search for coding agents" />
-<meta property="og:description" content="Sparse + dense + knowledge-base search over your files, exposed via MCP, CLI, and a browser UI. Runs entirely on your machine." />
+<meta property="og:description" content="Sparse + dense + knowledge-base + folder-metadata-graph search over your files, exposed via MCP, CLI, and a browser UI. Runs entirely on your machine." />
 <meta property="og:type" content="website" />
 </head>
 <body>
@@ -56,26 +56,29 @@
   <div class="wrap">
     <div class="section-head">
       <div class="eyebrow">Architecture</div>
-      <h2>Three retrievers, fused</h2>
-      <p>Exact keyword, semantic, and knowledge-graph search — run independently or combined
-        with reciprocal rank fusion. Nothing is indexed into the folder you search.</p>
+      <h2>Four retrievers, fused</h2>
+      <p>Exact keyword, semantic, knowledge-graph, and folder-metadata search — run
+        independently or combined with reciprocal rank fusion. Nothing is indexed into the
+        folder you search.</p>
     </div>
     <div class="diagram">
 <pre>                    ┌───────────────────────────────────────────────┐
                     │        <span class="hl2">MCP server  /  CLI  /  browser UI</span>       │
                     │  search_sparse · search_dense · search_kb      │
-                    │  search_hybrid · index_status · reindex        │
+                    │  search_graph · search_hybrid                  │
+                    │  index_status · reindex                        │
                     └───────────────────────┬─────────────────────────┘
                                             │
-              ┌──────────────────────────────┼──────────────────────────────┐
-              │                              │                              │
-       ┌──────▼──────┐               ┌───────▼───────┐               ┌──────▼──────┐
-       │   <span class="hl1">Sparse</span>    │               │     <span class="hl2">Dense</span>      │               │  <span class="hl3">Knowledge</span>  │
-       │  (Pyserini  │               │  (embeddings   │               │    base     │
-       │   BM25,     │               │   + Zvec ANN)  │               │  (Obsidian  │
-       │  bilingual) │               │  off by default│               │   graph)    │
-       └──────┬──────┘               └───────┬───────┘               └──────┬──────┘
-              └───────────────────┬───────────┴──────────────────────────────┘
+        ┌───────────────┬───────────────────┼────────────────┬───────────────┐
+        │                │                   │                │
+ ┌──────▼──────┐  ┌──────▼──────┐    ┌───────▼──────┐  ┌───────▼──────┐
+ │   <span class="hl1">Sparse</span>    │  │    <span class="hl2">Dense</span>    │    │  <span class="hl3">Knowledge</span>   │  │    <span class="hl1">Folder</span>    │
+ │  (Pyserini  │  │ (embeddings │    │     base     │  │   metadata   │
+ │    BM25,    │  │ + Zvec ANN, │    │  (Obsidian   │  │    graph     │
+ │  bilingual) │  │off by       │    │ graph, live  │  │ (paths only, │
+ │             │  │ default)    │    │    vault)    │  │ no content)  │
+ └──────┬──────┘  └──────┬──────┘    └───────┬──────┘  └───────┬──────┘
+        └───────────────┴───────────────────┴────────────────┘
                                   │  reciprocal rank fusion
                            ┌──────▼──────┐
                            │   Fusion    │
@@ -90,6 +93,7 @@
       │  Ingestion pipeline                                     │
       │  walk (include/exclude globs) → extract (per file type) │
       │       → chunk into passages → index (sparse/dense)      │
+      │       → build folder/filename metadata graph            │
       │       → manifest.sqlite tracks hash/mtime for deltas    │
       └──────────────────────────────────────────────────────────┘</pre>
     </div>
@@ -113,10 +117,14 @@
       </div>
       <div class="step">
         <div class="num">5</div>
-        <div><h4>Retrieve</h4><p>Query any retriever directly, or fuse all enabled ones with reciprocal rank fusion — no tuning required.</p></div>
+        <div><h4>Build the metadata graph</h4><p>Every indexed file's <em>path only</em> (never content) contributes to a folder tree, materialized as an Obsidian-compatible vault of linked notes plus a compact JSON index for fast lookups.</p></div>
       </div>
       <div class="step">
         <div class="num">6</div>
+        <div><h4>Retrieve</h4><p>Query any retriever directly, or fuse all enabled ones with reciprocal rank fusion — no tuning required. The metadata graph pulls in sibling files from a hit's folder, not just files that matched directly.</p></div>
+      </div>
+      <div class="step">
+        <div class="num">7</div>
         <div><h4>Re-index incrementally</h4><p>A manifest diff finds added/modified/deleted files since the last run, so only the delta gets re-processed. A no-op run does nothing.</p></div>
       </div>
     </div>
@@ -139,8 +147,8 @@
       </div>
       <div class="card">
         <span class="icon">🔎</span>
-        <h3>Sparse + dense + graph</h3>
-        <p>BM25 keyword search, embedding-based semantic search, and Obsidian graph expansion — separately or fused via RRF.</p>
+        <h3>Sparse + dense + two graphs</h3>
+        <p>BM25 keyword search, embedding-based semantic search, Obsidian vault graph expansion, and a folder/filename metadata graph — separately or fused via RRF.</p>
       </div>
       <div class="card">
         <span class="icon">🤖</span>
@@ -161,6 +169,11 @@
         <span class="icon">🌐</span>
         <h3>Bilingual by default</h3>
         <p>English gets Porter stemming; Chinese/Japanese/Korean get CJK bigram analysis — in a single index, out of the box.</p>
+      </div>
+      <div class="card">
+        <span class="icon">🗂️</span>
+        <h3>Folder-aware search</h3>
+        <p>A metadata graph over paths and file names (never content) lets a hit pull in sibling files from its own folder — on by default, no model needed.</p>
       </div>
     </div>
   </div>
@@ -193,7 +206,7 @@
     <div class="section-head">
       <div class="eyebrow">Interfaces</div>
       <h2>One engine, four ways in</h2>
-      <p>The same sparse/dense/knowledge-base retrieval, from wherever you're working.</p>
+      <p>The same sparse/dense/knowledge-base/folder-graph retrieval, from wherever you're working.</p>
     </div>
 
     <div class="codepanel">
@@ -206,7 +219,7 @@
 
       <div class="tabpage active" id="cli">
 <pre>infogrep index &lt;dir&gt;                 # build / update the index for a directory
-infogrep search &lt;query&gt; -d &lt;dir&gt;     # query (modes: hybrid [default] | sparse | dense | kb)
+infogrep search &lt;query&gt; -d &lt;dir&gt;     # query (modes: hybrid [default] | sparse | dense | kb | graph)
 infogrep search &lt;query&gt; --prf        # sparse query expansion (RM3)
 infogrep status &lt;dir&gt;                # index status + staleness (pending changes)
 infogrep mcp --dir &lt;dir&gt;             # run the MCP server (stdio) for coding agents
@@ -218,8 +231,8 @@ infogrep schedule install &lt;dir&gt; --at 03:00   # daily auto-reindex via laun
 <pre>claude mcp add infogrep -- uv run infogrep mcp --dir /path/to/your/project
 
 # Tools exposed:
-#   search_sparse · search_dense · search_kb · search_hybrid
-#   index_status · reindex
+#   search_sparse · search_dense · search_kb · search_graph
+#   search_hybrid · index_status · reindex
 #
 # Each result carries: path, page, snippet, score, retriever
 # search_hybrid fuses enabled retrievers with reciprocal rank fusion
@@ -229,7 +242,7 @@ infogrep schedule install &lt;dir&gt; --at 03:00   # daily auto-reindex via laun
       <div class="tabpage" id="web">
 <pre>infogrep serve --dir &lt;dir&gt;    # http://127.0.0.1:7421 by default
 
-# Search box · mode selector (hybrid/sparse/dense/kb)
+# Search box · mode selector (hybrid/sparse/dense/kb/graph)
 # result snippets with path/page/score · add/switch folders
 # JSON API: /api/search  /api/status   (bound to localhost)</pre>
       </div>
@@ -248,6 +261,11 @@ model_name = "Qwen/Qwen3-Embedding-0.6B"
 enabled = false        # Obsidian vault graph search
 vault = "My Vault"
 hops = 1
+
+[graph]
+enabled = true          # folder/filename metadata graph — cheap, on by default
+hops = 1                # folder hops to expand from a matched folder
+max_folders = 5
 
 [ingest]
 ocr = false             # OCR scanned PDF pages (needs tesseract)</pre>

@@ -17,6 +17,7 @@ def _index(tmp_path):
     cfg.index_dir.mkdir(parents=True, exist_ok=True)
     (cfg.index_dir / "config.toml").write_text(
         "[sparse]\nenabled = false\n[dense]\nenabled = true\nembedder = 'hash'\n"
+        "[graph]\nenabled = false\n"
     )
     Indexer(Config.load(tmp_path)).reindex()
 
@@ -26,7 +27,7 @@ def test_tools_registered():
 
     # FastMCP exposes the registered tools; all five should be present.
     names = {
-        "search_sparse", "search_dense", "search_kb",
+        "search_sparse", "search_dense", "search_kb", "search_graph",
         "search_hybrid", "index_status", "reindex",
     }
     assert names.issubset(set(dir(srv)))

@@ -99,6 +99,7 @@ def test_hybrid_defaults_to_sparse_only_when_dense_off(tmp_path):
     _legal_paper(tmp_path)
     cfg = Config.load(tmp_path)
     cfg.include = ["**/*"]
+    cfg.graph.enabled = False
     Indexer(cfg).reindex()
 
     out = SearchEngine(cfg).search_hybrid("legal case retrieval", k=5)

@@ -1,6 +1,7 @@
 """MCP server exposing InfoGrep retrieval as agent tools.
 
-Tools: search_sparse, search_dense, search_hybrid, index_status, reindex.
+Tools: search_sparse, search_dense, search_kb, search_graph, search_hybrid,
+index_status, reindex.
 
 The server is bound to a default directory (the indexed project root) chosen at launch;
 every tool also accepts an optional ``directory`` to target a different indexed tree.
@@ -75,6 +76,25 @@ def search_kb(query: str, k: int = 10, directory: str | None = None) -> dict:
 
 
 @mcp.tool()
+def search_graph(query: str, k: int = 10, directory: str | None = None) -> dict:
+    """Folder/filename metadata-graph search (no file content involved).
+
+    Matches the query against folder and file *names*, then expands to neighboring
+    folders (parent/children/siblings) so files that live in the most relevant
+    folder(s) surface too — not just files whose own name/content matched the query.
+    Built automatically on every reindex (``[graph] enabled = true``, the default).
+
+    Args:
+        query: search query (matched against folder/file names, not content).
+        k: number of results.
+        directory: indexed directory to search (defaults to the server's directory).
+
+    Returns a dict with a ``results`` list.
+    """
+    return {"results": [r.to_dict() for r in _engine(directory).search_graph(query, k=k)]}
+
+
+@mcp.tool()
 def search_hybrid(
     query: str,
     k: int = 10,
@@ -82,14 +102,15 @@ def search_hybrid(
     prf: bool = False,
     directory: str | None = None,
 ) -> dict:
-    """Fused search (sparse + dense [+ kb]) combined with reciprocal rank fusion.
+    """Fused search (sparse + dense + graph [+ kb]) combined with reciprocal rank fusion.
 
-    The recommended default tool: robust across keyword and semantic intent.
+    The recommended default tool: robust across keyword and semantic intent, and also
+    pulls in sibling files from the most relevant folder(s) via the metadata graph.
 
     Args:
         query: search query.
         k: number of results.
-        retrievers: subset of ["sparse", "dense", "kb"]; defaults to all enabled.
+        retrievers: subset of ["sparse", "dense", "kb", "graph"]; defaults to all enabled.
         prf: enable RM3 PRF for the sparse component.
         directory: indexed directory to search (defaults to the server's directory).
 

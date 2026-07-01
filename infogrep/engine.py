@@ -15,7 +15,7 @@ from .retrieval.fusion import reciprocal_rank_fusion
 # Per-retriever candidate pool size for fusion (>= k so RRF has material to work with).
 _POOL_MIN = 20
 
-ALL_RETRIEVERS = ("sparse", "dense", "kb")
+ALL_RETRIEVERS = ("sparse", "dense", "kb", "graph")
 
 
 @dataclass
@@ -33,6 +33,7 @@ class SearchEngine:
         self._sparse = None
         self._dense = None
         self._kb = None
+        self._graph = None
 
     # -- lazy backends -----------------------------------------------------
 
@@ -67,6 +68,18 @@ class SearchEngine:
             self._kb = KnowledgeBaseIndex(self.config)
         return self._kb
 
+    @property
+    def graph(self):
+        if self._graph is None:
+            from .retrieval.graph import FolderGraphIndex
+
+            self._graph = FolderGraphIndex(
+                self.config.index_dir,
+                hops=self.config.graph.hops,
+                max_folders=self.config.graph.max_folders,
+            )
+        return self._graph
+
     # -- individual retrievers --------------------------------------------
 
     def _enrich(self, results: list[Result], root) -> list[Result]:
@@ -85,6 +98,10 @@ class SearchEngine:
         # filesystem root, so set filename/ext only (root=None leaves abs_path unset).
         return self._enrich(self.kb.search(query, k=k), None)
 
+    def search_graph(self, query: str, k: int = 10) -> list[Result]:
+        # Graph paths reference real files in the indexed directory, just like sparse/dense.
+        return self._enrich(self.graph.search(query, k=k), self.config.target_dir)
+
     def _run(self, name: str, query: str, k: int, prf: bool) -> list[Result]:
         if name == "sparse":
             return self.search_sparse(query, k=k, prf=prf)
@@ -92,6 +109,8 @@ class SearchEngine:
             return self.search_dense(query, k=k)
         if name == "kb":
             return self.search_kb(query, k=k)
+        if name == "graph":
+            return self.search_graph(query, k=k)
         raise ValueError(f"unknown retriever: {name}")
 
     def _enabled(self, name: str) -> bool:
@@ -99,6 +118,7 @@ class SearchEngine:
             "sparse": self.config.sparse.enabled,
             "dense": self.config.dense.enabled,
             "kb": self.config.kb.enabled,
+            "graph": self.config.graph.enabled,
         }.get(name, False)
 
     # -- fused -------------------------------------------------------------
