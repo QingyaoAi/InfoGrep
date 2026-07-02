@@ -1,6 +1,6 @@
 # InfoGrep — convenience wrapper. Run `make` (or `make help`) to list targets.
 .DEFAULT_GOAL := help
-.PHONY: help install uninstall purge sync app test lint shellcheck
+.PHONY: help install uninstall purge sync app test lint shellcheck build
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -32,3 +32,7 @@ lint: ## Lint Python (ruff) and shell scripts (shellcheck if installed)
 
 shellcheck: ## Lint just the shell scripts
 	shellcheck install.sh uninstall.sh macos/build.sh
+
+build: ## Build sdist + wheel into dist/ (uv build)
+	rm -rf dist
+	uv build
