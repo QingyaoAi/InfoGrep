@@ -29,6 +29,7 @@ struct SearchResult {
     let ext: String?
     let retriever: String
     var filename: String { (path as NSString).lastPathComponent }
+    var displayPath: String { absPath ?? path }
 }
 
 func apiSearch(_ query: String, dir: String?, completion: @escaping ([SearchResult]) -> Void) {
@@ -241,7 +242,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         table = NSTableView()
         table.headerView = nil
         table.backgroundColor = .clear
-        table.rowHeight = 52
+        table.rowHeight = 64
         table.intercellSpacing = NSSize(width: 0, height: 0)
         table.selectionHighlightStyle = .regular
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("c"))
@@ -280,11 +281,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         }
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
-        panel.makeFirstResponder(field)
-        field.stringValue = ""
         updatePlaceholder()
-        results = []
-        table.reloadData()
+        // Keep the last query/results so reopening the panel picks up where it left off;
+        // select the text so typing immediately replaces it, like Spotlight.
+        field.selectText(nil)
     }
 
     func hidePanel() { panel.orderOut(nil) }
@@ -344,20 +344,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         let name = NSTextField(labelWithString: r.filename + (r.page != nil ? "  · p.\(r.page!)" : ""))
         name.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         name.textColor = .labelColor
-        let sub = NSTextField(labelWithString: r.snippet.isEmpty ? r.path : r.snippet)
+        let pathLabel = NSTextField(labelWithString: r.displayPath)
+        pathLabel.font = NSFont.systemFont(ofSize: 10)
+        pathLabel.textColor = .tertiaryLabelColor
+        pathLabel.lineBreakMode = .byTruncatingMiddle
+        let sub = NSTextField(labelWithString: r.snippet)
         sub.font = NSFont.systemFont(ofSize: 11)
         sub.textColor = .secondaryLabelColor
         sub.lineBreakMode = .byTruncatingTail
         name.translatesAutoresizingMaskIntoConstraints = false
+        pathLabel.translatesAutoresizingMaskIntoConstraints = false
         sub.translatesAutoresizingMaskIntoConstraints = false
-        v.addSubview(name); v.addSubview(sub)
+        v.addSubview(name); v.addSubview(pathLabel); v.addSubview(sub)
         NSLayoutConstraint.activate([
             name.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 16),
             name.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -16),
             name.topAnchor.constraint(equalTo: v.topAnchor, constant: 7),
+            pathLabel.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 16),
+            pathLabel.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -16),
+            pathLabel.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 1),
             sub.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 16),
             sub.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -16),
-            sub.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 2),
+            sub.topAnchor.constraint(equalTo: pathLabel.bottomAnchor, constant: 2),
         ])
         return v
     }

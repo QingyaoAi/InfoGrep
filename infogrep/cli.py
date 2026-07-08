@@ -13,6 +13,7 @@ import typer
 
 from . import __version__
 from .config import Config
+from .engine import MODES
 
 app = typer.Typer(
     add_completion=False,
@@ -70,7 +71,7 @@ def search(
     query: str = typer.Argument(..., help="Search query."),
     directory: Path = typer.Option(Path.cwd(), "--dir", "-d", help="Indexed directory."),
     k: int = typer.Option(10, "--k", help="Number of results."),
-    mode: str = typer.Option("hybrid", "--mode", "-m", help="hybrid | sparse | dense | kb | graph."),
+    mode: str = typer.Option("hybrid", "--mode", "-m", help=" | ".join(MODES)),
     prf: bool = typer.Option(False, "--prf", help="RM3 pseudo-relevance feedback (sparse)."),
 ) -> None:
     """Query indexed content."""
@@ -79,27 +80,23 @@ def search(
     engine = SearchEngine(Config.load(directory))
 
     try:
-        if mode == "sparse":
-            results = engine.search_sparse(query, k=k, prf=prf)
-        elif mode == "dense":
-            results = engine.search_dense(query, k=k)
-        elif mode == "hybrid":
-            out = engine.search_hybrid(query, k=k, prf=prf)
-            results = out.results
-            if out.used:
-                typer.echo(f"[infogrep] fused: {', '.join(out.used)}")
-            for name, reason in out.skipped.items():
-                typer.echo(f"[infogrep] skipped {name}: {reason}")
-        elif mode == "kb":
-            results = engine.search_kb(query, k=k)
-        elif mode == "graph":
-            results = engine.search_graph(query, k=k)
-        else:
-            typer.echo(f"[infogrep] unknown mode: {mode}", err=True)
-            raise typer.Exit(code=2)
+        out = engine.search(mode, query, k=k, prf=prf)
+    except ValueError:
+        typer.echo(f"[infogrep] unknown mode: {mode}", err=True)
+        raise typer.Exit(code=2)
     except FileNotFoundError as exc:
         typer.echo(f"[infogrep] {exc}", err=True)
         raise typer.Exit(code=2)
+    except RuntimeError as exc:  # e.g. missing JDK or optional 'dense' extra
+        typer.echo(f"[infogrep] {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    results = out.results
+    if mode == "hybrid":
+        if out.used:
+            typer.echo(f"[infogrep] fused: {', '.join(out.used)}")
+        for name, reason in out.skipped.items():
+            typer.echo(f"[infogrep] skipped {name}: {reason}")
 
     if not results:
         typer.echo("[infogrep] no results.")
@@ -182,7 +179,11 @@ def schedule_install(
     except ValueError:
         typer.echo(f"[infogrep] invalid --at time: {at!r} (use HH:MM)", err=True)
         raise typer.Exit(code=2)
-    path = scheduler.install(directory, hour=hour, minute=minute)
+    try:
+        path = scheduler.install(directory, hour=hour, minute=minute)
+    except RuntimeError as exc:
+        typer.echo(f"[infogrep] {exc}", err=True)
+        raise typer.Exit(code=1)
     typer.echo(f"[infogrep] scheduled daily reindex of {Path(directory).resolve()} at {at}")
     typer.echo(f"[infogrep] launchd agent: {path}")
 

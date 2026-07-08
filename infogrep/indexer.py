@@ -23,12 +23,12 @@ from .ingest.walker import walk
 from .manifest import Manifest
 
 _HASH_CHUNK = 1 << 20  # 1 MiB streaming read; never load whole files into memory
+_COMMIT_EVERY = 500  # commit the manifest every N files: durable + resumable progress
 
 
 def _take(iterator, n):
     """Pull up to ``n`` items from an iterator (for priming the worker pool)."""
     return list(itertools.islice(iterator, n))
-_COMMIT_EVERY = 500  # commit the manifest every N files: durable + resumable progress
 
 
 def _extract_task(task):
@@ -85,6 +85,8 @@ class Indexer:
 
     def __init__(self, config: Config):
         self.config = config
+        # Content hashes computed during change detection (dropped after each run).
+        self._hash_cache: dict[Path, str] = {}
 
     def reindex(self, full: bool = False, on_progress=None) -> IndexReport:
         """(Re)index the directory. Only changed files are re-extracted (the manifest
@@ -170,7 +172,7 @@ class Indexer:
                         finished, _ = wait(inflight, return_when=FIRST_COMPLETED)
                         for fut in finished:
                             _, rel, stat, change = inflight.pop(fut)
-                            r, passages, content_hash, err = fut.result()
+                            _rel, passages, content_hash, err = fut.result()
                             store(rel, passages, content_hash, err, stat, change)
                             nxt = next(it, None)
                             if nxt is not None:
@@ -178,7 +180,7 @@ class Indexer:
             else:
                 for item in todo:
                     _, rel, stat, change = item
-                    r, passages, content_hash, err = _extract_task(task_for(item))
+                    _rel, passages, content_hash, err = _extract_task(task_for(item))
                     store(rel, passages, content_hash, err, stat, change)
 
             # 3) Files in the manifest but no longer on disk are deleted.
@@ -199,7 +201,7 @@ class Indexer:
             self._build_graph(manifest, report, full)
             self._build_backends(manifest, report, full, removed_ids, changed_paths)
 
-        self._hash_cache: dict[Path, str] = {}
+        self._hash_cache.clear()
         return report
 
     def _worker_count(self, total: int) -> int:
@@ -218,7 +220,7 @@ class Indexer:
             stats["indexed"] = True
             if check_staleness:
                 stats.update(self._staleness(manifest))
-        self._hash_cache = {}
+        self._hash_cache.clear()
         return stats
 
     def _staleness(self, manifest: Manifest) -> dict:
@@ -266,12 +268,9 @@ class Indexer:
         return "modified"
 
     def _cached_hash(self, abs_path: Path) -> str:
-        cache = getattr(self, "_hash_cache", None)
-        if cache is None:
-            cache = self._hash_cache = {}
-        if abs_path not in cache:
-            cache[abs_path] = _hash_file(abs_path)
-        return cache[abs_path]
+        if abs_path not in self._hash_cache:
+            self._hash_cache[abs_path] = _hash_file(abs_path)
+        return self._hash_cache[abs_path]
 
     @staticmethod
     def _stub_passage(rel: str) -> Passage:

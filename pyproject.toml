@@ -27,19 +27,19 @@ dependencies = [
     "python-docx>=1.2.0",
     "python-pptx>=1.0.2",
     "pathspec>=1.1.1",
-    "pyserini>=1.2.0",
-    "zvec>=0.5.1",
-    "sentence-transformers>=5.6.0",
+    "pyjnius>=1.6.1",
     "mcp>=1.28.0",
     "openpyxl>=3.1.5",
 ]
 
-# Heavy, milestone-specific deps are added later via `uv add`:
-#   M2 sparse  -> pyserini
-#   M3 dense   -> zvec, torch, transformers, sentence-transformers
-#   M1 ingest  -> pymupdf, python-docx, python-pptx
-#   M4 mcp     -> mcp
 [project.optional-dependencies]
+# Semantic (embedding) search. Pulls in torch — sparse/graph/kb search work without it,
+# so the base install stays small. The Anserini jar for sparse search is fetched on
+# first use (see infogrep/anserini.py), not installed via pip.
+dense = [
+    "zvec>=0.5.1",
+    "sentence-transformers>=5.6.0",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",

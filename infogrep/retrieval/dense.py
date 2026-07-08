@@ -11,14 +11,30 @@ import json
 import shutil
 from typing import Iterable
 
+from typing import TYPE_CHECKING
+
 from ..config import Config
 from .base import Result
-from .embedders.cache import EmbeddingCache
-from .embedders.registry import get_embedder
+
+if TYPE_CHECKING:
+    from .embedders.cache import EmbeddingCache
 
 _VECTOR_FIELD = "embedding"
 _BUILD_BATCH = 128
 _SNIPPET_CHARS = 240
+
+DENSE_EXTRA_HINT = (
+    "dense search needs the optional 'dense' dependencies. Install with "
+    "`pip install 'infogrep[dense]'` (from a checkout: `uv sync --extra dense`)."
+)
+
+
+def _import_zvec():
+    try:
+        import zvec
+    except ImportError as exc:
+        raise RuntimeError(DENSE_EXTRA_HINT) from exc
+    return zvec
 
 
 class DenseIndex:
@@ -36,6 +52,10 @@ class DenseIndex:
     @property
     def embedder(self):
         if self._embedder is None:
+            # Deferred: the embedders package needs numpy, which (like the rest of the
+            # embedding stack) is only installed with the optional 'dense' extra.
+            from .embedders.registry import get_embedder
+
             self._embedder = get_embedder(self.config.dense)
         return self._embedder
 
@@ -66,7 +86,8 @@ class DenseIndex:
 
     def build(self, passages: Iterable) -> int:
         """(Re)build the Zvec collection from a stream of manifest passage Rows."""
-        import zvec
+        zvec = _import_zvec()
+        from .embedders.cache import EmbeddingCache
 
         embedder = self.embedder
         dim = embedder.dim
@@ -121,7 +142,8 @@ class DenseIndex:
         Deletes ``removed_ids`` and (up)inserts ``added_passages`` — no full rebuild.
         The embedding model is loaded lazily, so a delete-only update never loads it.
         """
-        import zvec
+        zvec = _import_zvec()
+        from .embedders.cache import EmbeddingCache
 
         collection = zvec.open(path=str(self.dense_dir))
         removed = list(removed_ids)
@@ -171,7 +193,7 @@ class DenseIndex:
     # -- search ------------------------------------------------------------
 
     def search(self, query: str, k: int = 10) -> list[Result]:
-        import zvec
+        zvec = _import_zvec()
 
         if not self._exists():
             raise FileNotFoundError(

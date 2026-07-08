@@ -3,6 +3,11 @@
 Installs a per-directory LaunchAgent that runs ``infogrep index <dir>`` on a daily
 calendar schedule. The agent uses absolute interpreter/PATH/HOME so it works outside
 an interactive shell (needed for brew's JDK detection and the HF cache).
+
+macOS only for now — ``launchd`` has no portable equivalent. On Linux, set up your own
+cron job or systemd timer instead, e.g.:
+
+    0 3 * * *  cd /path/to/InfoGrep && uv run infogrep index /path/to/dir
 """
 
 from __future__ import annotations
@@ -15,6 +20,17 @@ from pathlib import Path
 
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 _LABEL_PREFIX = "com.infogrep.reindex"
+
+NOT_SUPPORTED_MSG = (
+    "`infogrep schedule` uses macOS launchd and isn't available on this platform.\n"
+    "Set up your own cron job or systemd timer instead, e.g.:\n"
+    "    0 3 * * *  cd /path/to/InfoGrep && uv run infogrep index /path/to/dir"
+)
+
+
+def _require_macos() -> None:
+    if sys.platform != "darwin":
+        raise RuntimeError(NOT_SUPPORTED_MSG)
 
 
 def _label(directory: Path) -> str:
@@ -37,6 +53,7 @@ def _agent_env() -> dict[str, str]:
 
 def install(directory: Path, hour: int = 3, minute: int = 0) -> Path:
     """Install (or replace) a daily reindex agent for ``directory`` at HH:MM. Returns plist path."""
+    _require_macos()
     directory = Path(directory).expanduser().resolve()
     LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     # Log into the (separate) index location, never the indexed folder.

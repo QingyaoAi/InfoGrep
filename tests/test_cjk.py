@@ -8,27 +8,22 @@ from infogrep.indexer import Indexer
 from infogrep.retrieval.sparse import SparseIndex, make_analyzer
 
 
-def _pyserini_available() -> bool:
+def _sparse_available() -> bool:
     try:
-        from infogrep.jvm import ensure_jdk
+        from infogrep import anserini
 
-        ensure_jdk()
-        import pyserini.search.lucene  # noqa: F401
-
-        return True
+        return anserini.available()
     except Exception:
         return False
 
 
-needs_sparse = pytest.mark.skipif(not _pyserini_available(), reason="pyserini/JDK21 not available")
+needs_sparse = pytest.mark.skipif(not _sparse_available(), reason="Anserini jar/JDK21 not available")
 
 
 @needs_sparse
 def test_cjk_analyzer_is_bigram():
-    from infogrep.jvm import ensure_jdk
-    from pyserini.pyclass import autoclass
+    from infogrep.anserini import autoclass
 
-    ensure_jdk()
     AU = autoclass("io.anserini.analysis.AnalyzerUtils")
     zh = make_analyzer("zh")
     assert zh.getClass().getName().endswith("CJKAnalyzer")
@@ -63,8 +58,8 @@ def test_default_composite_handles_english_and_chinese(tmp_path):
 @needs_sparse
 def test_en_zh_builds_in_cold_process(tmp_path):
     # Regression: the en+zh analyzer uses Lucene CustomAnalyzer, which is only on the
-    # classpath if pyserini.pyclass is imported before jnius. pytest masks this (another
-    # test imports pyserini.search.lucene), so build in a FRESH process to catch it.
+    # classpath if infogrep.anserini is imported before jnius. pytest masks this (another
+    # test boots the JVM first), so build in a FRESH process to catch it.
     import subprocess
     import sys
     import textwrap

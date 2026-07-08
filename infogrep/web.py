@@ -321,24 +321,14 @@ def _make_handler(directory: Path):
                 k = 10
             prf = qs.get("prf", ["0"])[0] in ("1", "true", "on")
             try:
-                if mode == "hybrid":
-                    out = eng.search_hybrid(q, k=k, prf=prf)
-                    return {
-                        "results": [r.to_dict() for r in out.results],
-                        "used": out.used,
-                        "skipped": out.skipped,
-                    }
-                if mode == "sparse":
-                    hits = eng.search_sparse(q, k=k, prf=prf)
-                elif mode == "dense":
-                    hits = eng.search_dense(q, k=k)
-                elif mode == "kb":
-                    hits = eng.search_kb(q, k=k)
-                elif mode == "graph":
-                    hits = eng.search_graph(q, k=k)
-                else:
-                    return {"error": f"unknown mode: {mode}", "results": []}
-                return {"results": [r.to_dict() for r in hits], "used": [mode], "skipped": {}}
+                out = eng.search(mode, q, k=k, prf=prf)
+                return {
+                    "results": [r.to_dict() for r in out.results],
+                    "used": out.used,
+                    "skipped": out.skipped,
+                }
+            except ValueError:
+                return {"error": f"unknown mode: {mode}", "results": []}
             except FileNotFoundError as exc:
                 return {"error": str(exc), "results": []}
             except Exception as exc:  # surface backend errors to the page, don't crash

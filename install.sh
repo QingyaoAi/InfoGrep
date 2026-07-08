@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # InfoGrep installer — clone the repo, then run ./install.sh
 #
-# Sets up: the Python backend (uv), the macOS menu-bar app (⌘⇧Space launcher),
-# login agents (web server + app) and the Claude Code MCP server. Re-runnable.
-# Remove everything with ./uninstall.sh.
+# Sets up the Python backend (uv) and the Claude Code MCP server on any platform.
+# On macOS, also builds the menu-bar app (⌘⇧Space launcher) and login agents (web
+# server + app). On Linux, the backend and CLI (`infogrep serve`, `infogrep mcp`, …)
+# are fully supported; there's no menu-bar app and no auto-start service — run
+# `infogrep serve` yourself, or wire up your own systemd unit / cron job.
+# Re-runnable. Remove everything with ./uninstall.sh.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,11 +26,18 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 say "Installing Python dependencies (uv sync)…"
-uv sync
+uv sync --extra dense   # dense (embedding) search included; base deps alone are much smaller
 
 # 2) Java check (sparse/BM25 needs JDK 21; auto-detected at runtime) -----------
 if ! uv run python -c "from infogrep.jvm import ensure_jdk; ensure_jdk()" >/dev/null 2>&1; then
-  echo "  ⚠ JDK 21 not found — sparse search needs it. On macOS:  brew install openjdk@21"
+  echo "  ⚠ JDK 21 not found — sparse search needs it."
+  if [ "$(uname)" = "Darwin" ]; then
+    echo "    macOS:          brew install openjdk@21"
+  else
+    echo "    Debian/Ubuntu:  sudo apt install openjdk-21-jdk"
+    echo "    Fedora/RHEL:    sudo dnf install java-21-openjdk"
+    echo "    Arch:           sudo pacman -S jdk-openjdk"
+  fi
 fi
 
 if [ "$(uname)" = "Darwin" ]; then
@@ -97,7 +107,8 @@ if command -v claude >/dev/null 2>&1; then
   claude mcp add infogrep --scope user -- "$INFOGREP" mcp --dir "$SERVE_DIR" >/dev/null 2>&1 || true
 fi
 
-cat <<EOF
+if [ "$(uname)" = "Darwin" ]; then
+  cat <<EOF
 
 ✅ InfoGrep installed.
    • macOS app + ⌘⇧Space launcher  (menu-bar 🔎)
@@ -107,3 +118,17 @@ cat <<EOF
 Get started: index a folder from the app ("Index a Folder…") or the web UI ("＋ folder").
 Uninstall:   ./uninstall.sh            (add --purge to also delete the indexes)
 EOF
+else
+  cat <<EOF
+
+✅ InfoGrep installed.
+   • CLI:          uv run infogrep --help
+   • Web UI:       uv run infogrep serve --dir <folder> --port $PORT
+   • Claude Code:  the 'infogrep' search tools are available in new sessions
+
+Get started:  uv run infogrep index <folder>   then   uv run infogrep serve --dir <folder>
+There's no menu-bar app or auto-start service on Linux; run 'infogrep serve' yourself, or
+wire up your own systemd --user unit / cron job to keep it running or reindex daily.
+Uninstall:   ./uninstall.sh            (add --purge to also delete the indexes)
+EOF
+fi

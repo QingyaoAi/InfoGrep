@@ -27,20 +27,17 @@ def test_row_to_json_shape():
     }
 
 
-def _pyserini_available() -> bool:
+def _sparse_available() -> bool:
     try:
-        from infogrep.jvm import ensure_jdk
+        from infogrep import anserini
 
-        ensure_jdk()
-        import pyserini.search.lucene  # noqa: F401
-
-        return True
+        return anserini.available()
     except Exception:
         return False
 
 
 pytestmark_integration = pytest.mark.skipif(
-    not _pyserini_available(), reason="pyserini/JDK21 not available"
+    not _sparse_available(), reason="Anserini jar/JDK21 not available"
 )
 
 

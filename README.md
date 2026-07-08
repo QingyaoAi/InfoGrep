@@ -78,12 +78,13 @@ should do with the output. InfoGrep fixes all three:
 
 1. **Walk** the target directory, respecting include/exclude glob patterns.
 2. **Extract** text per file type (PDF via PyMuPDF, DOCX/PPTX/XLSX via python-docx/pptx/
-   openpyxl, legacy `.doc` via macOS `textutil`, everything else as UTF-8 text). Files with
-   no extractable content are still indexed by file name/path, so they're findable.
+   openpyxl, legacy `.doc` via macOS `textutil` — no content extractor for `.doc` on Linux
+   yet, everything else as UTF-8 text). Files with no extractable content are still indexed
+   by file name/path, so they're findable.
 3. **Chunk** long documents into overlapping passages (`{doc_id, passage_id, text, path,
    page}`), preserving page numbers for citations.
 4. **Index** passages into a **manifest** (SQLite: path → hash/mtime/size, for change
-   detection) plus **sparse** (Lucene/BM25 via Pyserini) and, optionally, **dense**
+   detection) plus **sparse** (Lucene/BM25 via Anserini) and, optionally, **dense**
    (embeddings in a Zvec vector store) indexes.
 5. **Build the folder/filename metadata graph** from every indexed file's *path* (never its
    content): a folder tree materialized as an Obsidian-compatible vault of linked notes
@@ -121,31 +122,61 @@ single language with `[sparse] language`.
 
 ## Install
 
-Requires [`uv`](https://docs.astral.sh/uv/) and JDK 21 for sparse search
-(`brew install openjdk@21`).
+Works the same way on **macOS and Linux**. Requires [`uv`](https://docs.astral.sh/uv/) and
+JDK 21 for sparse search:
+
+| Platform | JDK 21 |
+|---|---|
+| macOS | `brew install openjdk@21` |
+| Debian/Ubuntu | `sudo apt install openjdk-21-jdk` |
+| Fedora/RHEL | `sudo dnf install java-21-openjdk` |
+| Arch | `sudo pacman -S jdk-openjdk` |
+
+JDK is auto-detected (`JAVA_HOME`, Homebrew/Linuxbrew, `/usr/lib/jvm`, `update-alternatives`,
+`java` on `PATH`) — no manual `JAVA_HOME` wiring needed once it's installed. The Anserini
+engine (a single ~112 MB jar) is downloaded from Maven Central on first index and cached
+under `~/.infogrep/jars/` — the Python install itself stays small.
+
+Dense (embedding) search is an optional extra — the base install skips the ~800 MB
+torch/sentence-transformers stack. Add it with `uv sync --extra dense` (from a checkout) or
+`pip install 'infogrep[dense]'`, then enable `[dense]` per directory in the config.
 
 ```bash
 git clone https://github.com/QingyaoAi/InfoGrep.git
 cd InfoGrep
-uv sync --extra dev      # create venv + install deps
-uv run infogrep --help   # show command surface
-uv run pytest            # run tests
+uv sync --extra dev --extra dense   # create venv + install deps (drop --extra dense to slim)
+uv run infogrep --help              # show command surface
+uv run pytest                       # run tests
 ```
 
-### Install as a macOS app (optional)
+That's the whole backend — `uv run infogrep index/search/serve/mcp` all work at this point
+on either OS. `./install.sh` (below) additionally wires up autostart and Claude Code.
 
-The installer sets up the Python backend, builds a Spotlight-style menu-bar app, starts it
-(and the search backend) at login, and registers the Claude Code MCP server:
+### `./install.sh` (backend + Claude Code, all platforms; macOS app on macOS)
 
 ```bash
 ./install.sh          # INFOGREP_SERVE_DIR=/path sets the default folder; INFOGREP_PORT changes the port
 ```
 
-Then press **⌘⇧Space** for the launcher, or open <http://127.0.0.1:7421>. Add folders to
-search from the app (**Index a Folder…**) or the web UI (**＋ folder**).
+This always: runs `uv sync --extra dense`, checks for JDK 21, and registers the `infogrep` MCP server with
+Claude Code (if `claude` is on `PATH`).
 
-Additionally requires Xcode Command Line Tools (`xcode-select --install`). The app is
-ad-hoc signed, so the first launch needs a right-click → **Open** (one time).
+**On macOS**, it also builds a Spotlight-style menu-bar app and installs `launchd` login
+agents that start the app and the web UI (search backend) at login. Press **⌘⇧Space** for the
+launcher, or open <http://127.0.0.1:7421>; add folders to search from the app (**Index a
+Folder…**) or the web UI (**＋ folder**). Additionally requires Xcode Command Line Tools
+(`xcode-select --install`); the app is ad-hoc signed, so the first launch needs a right-click
+→ **Open** (one time).
+
+**On Linux**, there's no menu-bar app and nothing is auto-started (no bundled systemd/cron
+integration yet) — run the web UI yourself when you want it:
+
+```bash
+uv run infogrep serve --dir /path/to/folder   # http://127.0.0.1:7421
+```
+
+or wire up your own `systemd --user` unit / cron job if you want it running persistently or
+on a schedule.
 
 Remove everything cleanly:
 
@@ -168,7 +199,7 @@ infogrep search <query> --prf        # sparse query expansion (RM3)
 infogrep status <dir>                # index status + staleness (pending changes)
 infogrep mcp --dir <dir>             # run the MCP server (stdio) for coding agents
 infogrep serve --dir <dir>           # browser UI to test search (http://127.0.0.1:7421)
-infogrep schedule install <dir> --at 03:00   # daily auto-reindex via launchd
+infogrep schedule install <dir> --at 03:00   # daily auto-reindex via launchd (macOS only)
 infogrep schedule list | uninstall <dir>
 ```
 
@@ -249,7 +280,13 @@ ocr_min_chars = 16  # threshold below which a page is OCR'd
 ### Daily auto-reindex
 
 `infogrep schedule install <dir>` registers a macOS `launchd` agent that reindexes the
-directory once a day (logs to the index dir's `reindex.log`).
+directory once a day (logs to the index dir's `reindex.log`). **macOS only** — on Linux, set
+up your own cron job or systemd timer instead, e.g.:
+
+```bash
+# crontab -e
+0 3 * * *  cd /path/to/InfoGrep && uv run infogrep index /path/to/dir
+```
 
 ## Configuration reference
 

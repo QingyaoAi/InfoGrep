@@ -14,19 +14,16 @@ from infogrep.engine import SearchEngine
 from infogrep.indexer import Indexer
 
 
-def _pyserini_available() -> bool:
+def _sparse_available() -> bool:
     try:
-        from infogrep.jvm import ensure_jdk
+        from infogrep import anserini
 
-        ensure_jdk()
-        import pyserini.search.lucene  # noqa: F401
-
-        return True
+        return anserini.available()
     except Exception:
         return False
 
 
-needs_sparse = pytest.mark.skipif(not _pyserini_available(), reason="pyserini/JDK21 not available")
+needs_sparse = pytest.mark.skipif(not _sparse_available(), reason="Anserini jar/JDK21 not available")
 has_tesseract = shutil.which("tesseract") is not None
 
 

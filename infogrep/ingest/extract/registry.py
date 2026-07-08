@@ -1,9 +1,11 @@
 """Extractor registry: dispatch a file to the right text extractor by type.
 
-Each extractor maps a file path to a list of :class:`ExtractedPage`. Dispatch is by
-lowercase suffix; anything unregistered falls back to a UTF-8 text reader. Files with no
-extractable text return an empty list — the indexer still records them so they remain
-searchable by file name / path.
+Each extractor maps a file path to a list of :class:`ExtractedPage` and accepts (and
+may ignore) the shared keyword options (``ocr``, ``ocr_min_chars``). Dispatch is by
+lowercase suffix via ``_REGISTRY`` — supporting a new file type means adding one entry
+there (plus its suffix to the config include defaults). Anything unregistered falls
+back to a UTF-8 text reader. Files with no extractable text return an empty list — the
+indexer still records them so they remain searchable by file name / path.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from typing import Callable
 
 from ..types import ExtractedPage
 
-Extractor = Callable[[Path], list[ExtractedPage]]
+Extractor = Callable[..., list[ExtractedPage]]  # (path, *, ocr=..., ocr_min_chars=...)
 
 # Extensions treated as plain UTF-8 text (docs + common code/config formats).
 _TEXT_SUFFIXES = {
@@ -30,7 +32,7 @@ _TEXT_SUFFIXES = {
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp"}
 
 
-def _extract_text(path: Path) -> list[ExtractedPage]:
+def _extract_text(path: Path, **_opts) -> list[ExtractedPage]:
     try:
         text = path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError):
@@ -38,7 +40,9 @@ def _extract_text(path: Path) -> list[ExtractedPage]:
     return [ExtractedPage(page=None, text=text)] if text.strip() else []
 
 
-def _extract_pdf(path: Path, ocr: bool = False, ocr_min_chars: int = 16) -> list[ExtractedPage]:
+def _extract_pdf(
+    path: Path, ocr: bool = False, ocr_min_chars: int = 16, **_opts
+) -> list[ExtractedPage]:
     import fitz  # pymupdf
 
     pages: list[ExtractedPage] = []
@@ -57,7 +61,7 @@ def _extract_pdf(path: Path, ocr: bool = False, ocr_min_chars: int = 16) -> list
     return pages
 
 
-def _extract_docx(path: Path) -> list[ExtractedPage]:
+def _extract_docx(path: Path, **_opts) -> list[ExtractedPage]:
     import docx  # python-docx
 
     document = docx.Document(str(path))
@@ -67,7 +71,7 @@ def _extract_docx(path: Path) -> list[ExtractedPage]:
     return [ExtractedPage(page=None, text=text)] if text.strip() else []
 
 
-def _extract_pptx(path: Path) -> list[ExtractedPage]:
+def _extract_pptx(path: Path, **_opts) -> list[ExtractedPage]:
     from pptx import Presentation  # python-pptx
 
     prs = Presentation(str(path))
@@ -82,7 +86,7 @@ def _extract_pptx(path: Path) -> list[ExtractedPage]:
     return pages
 
 
-def _extract_xlsx(path: Path) -> list[ExtractedPage]:
+def _extract_xlsx(path: Path, **_opts) -> list[ExtractedPage]:
     import openpyxl
 
     wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
@@ -104,7 +108,7 @@ def _extract_xlsx(path: Path) -> list[ExtractedPage]:
     return pages
 
 
-def _extract_doc(path: Path) -> list[ExtractedPage]:
+def _extract_doc(path: Path, **_opts) -> list[ExtractedPage]:
     # Legacy .doc: python-docx can't read it; use macOS `textutil` if available.
     try:
         proc = subprocess.run(
@@ -117,7 +121,7 @@ def _extract_doc(path: Path) -> list[ExtractedPage]:
     return [ExtractedPage(page=None, text=text)] if text.strip() else []
 
 
-def _extract_image(path: Path, ocr: bool = False) -> list[ExtractedPage]:
+def _extract_image(path: Path, ocr: bool = False, **_opts) -> list[ExtractedPage]:
     # Images carry no text layer; only OCR yields content (needs tesseract).
     if not ocr:
         return []
@@ -148,6 +152,7 @@ _REGISTRY: dict[str, Extractor] = {
     ".doc": _extract_doc,
     ".pptx": _extract_pptx,
     ".xlsx": _extract_xlsx,
+    **{suffix: _extract_image for suffix in _IMAGE_SUFFIXES},
 }
 
 
@@ -159,14 +164,9 @@ def get_extractor(path: Path) -> Extractor:
 def is_supported(path: Path) -> bool:
     """Whether we have a content extractor for this file type (images need OCR)."""
     suffix = path.suffix.lower()
-    return suffix in _REGISTRY or suffix in _TEXT_SUFFIXES or suffix in _IMAGE_SUFFIXES
+    return suffix in _REGISTRY or suffix in _TEXT_SUFFIXES
 
 
 def extract(path: Path, ocr: bool = False, ocr_min_chars: int = 16) -> list[ExtractedPage]:
     """Extract text pages from ``path``. OCR applies to PDFs and images when enabled."""
-    suffix = path.suffix.lower()
-    if suffix == ".pdf":
-        return _extract_pdf(path, ocr=ocr, ocr_min_chars=ocr_min_chars)
-    if suffix in _IMAGE_SUFFIXES:
-        return _extract_image(path, ocr=ocr)
-    return get_extractor(path)(path)
+    return get_extractor(path)(path, ocr=ocr, ocr_min_chars=ocr_min_chars)

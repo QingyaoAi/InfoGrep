@@ -13,6 +13,8 @@ import infogrep.scheduler as sched
 def _no_launchctl(monkeypatch, agents_dir):
     monkeypatch.setattr(sched, "LAUNCH_AGENTS", agents_dir)
     monkeypatch.setattr(sched.subprocess, "run", lambda *a, **k: None)
+    # launchd is macOS-only; force the platform check so these pass on any host OS.
+    monkeypatch.setattr(sched.sys, "platform", "darwin")
 
 
 def test_install_writes_valid_plist(tmp_path, monkeypatch):
@@ -64,3 +66,14 @@ def test_install_replaces_existing(tmp_path, monkeypatch):
     listed = sched.list_agents()
     assert len(listed) == 1
     assert (listed[0]["hour"], listed[0]["minute"]) == (5, 15)
+
+
+def test_install_rejects_non_macos(tmp_path, monkeypatch):
+    monkeypatch.setattr(sched, "LAUNCH_AGENTS", tmp_path / "LaunchAgents")
+    monkeypatch.setattr(sched.sys, "platform", "linux")
+
+    try:
+        sched.install(tmp_path / "proj", hour=3, minute=0)
+        assert False, "expected RuntimeError on non-macOS"
+    except RuntimeError as exc:
+        assert "cron" in str(exc) or "systemd" in str(exc)

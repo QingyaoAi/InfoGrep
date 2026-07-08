@@ -101,7 +101,7 @@ def test_app_down_raises(tmp_path):
 def test_hybrid_skips_kb_when_app_down(tmp_path):
     cfg = _cfg(tmp_path)
     engine = SearchEngine(cfg)
-    engine._kb = KnowledgeBaseIndex(
+    engine._backends["kb"] = KnowledgeBaseIndex(
         cfg, runner=FakeObsidian(error="Error: make sure Obsidian is running")
     )
     out = engine.search_hybrid("x", k=3, retrievers=["kb"])
@@ -112,7 +112,7 @@ def test_hybrid_skips_kb_when_app_down(tmp_path):
 def test_hybrid_includes_kb(tmp_path):
     cfg = _cfg(tmp_path)
     engine = SearchEngine(cfg)
-    engine._kb = KnowledgeBaseIndex(
+    engine._backends["kb"] = KnowledgeBaseIndex(
         cfg, runner=FakeObsidian(search=["Note.md"], contents={"Note.md": "hello world"})
     )
     out = engine.search_hybrid("hello", k=3)

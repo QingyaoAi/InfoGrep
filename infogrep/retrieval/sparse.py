@@ -1,9 +1,9 @@
 """Sparse retriever backed by Anserini/Lucene (BM25, optional RM3 PRF).
 
 Both full build and incremental update run in-process via jnius against Lucene Java
-classes directly (avoiding pyserini's Python wrapper, which imports torch ~580 MB). Going
-through ``IndexWriter`` ourselves lets us use any analyzer — including the composite
-English+CJK default that the batch ``pyserini.index.lucene`` tool can't express.
+classes directly (see :mod:`infogrep.anserini` — no pyserini Python package needed).
+Going through ``IndexWriter`` ourselves lets us use any analyzer — including the
+composite English+CJK default that Anserini's batch indexing tool can't express.
 
 Documents are multi-field, reproducing Anserini's field layout:
   - ``id``                       StringField + BinaryDocValuesField (delete-by-term)
@@ -21,7 +21,6 @@ import shutil
 from pathlib import Path
 from typing import Iterable
 
-from ..jvm import ensure_jdk
 from .base import Result
 
 _SNIPPET_CHARS = 240
@@ -73,7 +72,7 @@ def make_analyzer(language: str):
     - ``"en"``: Anserini's DefaultEnglishAnalyzer (English only, Porter).
     - ``"zh"``/``"ja"``/``"ko"`` (single CJK): Anserini's CJKAnalyzer (bigrams).
     """
-    from pyserini.pyclass import autoclass
+    from ..anserini import autoclass
 
     if "+" in language or language in ("multi", "cjk"):
         # standard tokenizer -> lowercase -> CJK bigrams (CJK only) -> Porter (Latin only)
@@ -166,12 +165,10 @@ class SparseIndex:
         return self._write(added_passages, removed_ids=removed_ids, create=False)
 
     def _write(self, passages: Iterable, removed_ids, create: bool) -> int:
-        ensure_jdk()
-        # Import pyserini.pyclass BEFORE jnius so it configures the full Anserini
-        # classpath before the JVM starts (otherwise classes like CustomAnalyzer,
-        # used by the en+zh analyzer, aren't found).
-        from pyserini.pyclass import autoclass
-        from jnius import cast
+        # infogrep.anserini configures the Anserini classpath and boots the JVM at
+        # import time (otherwise classes like CustomAnalyzer, used by the en+zh
+        # analyzer, aren't found).
+        from ..anserini import autoclass, cast
 
         # Build mode uses the configured language; incremental must match the existing index.
         language = self.language if create else self.built_language()
@@ -241,13 +238,10 @@ class SparseIndex:
     # -- search ------------------------------------------------------------
 
     def _ensure_searcher(self):
-        # Query Lucene via Anserini's SimpleSearcher directly (through jnius), NOT
-        # pyserini's LuceneSearcher: the latter transitively imports torch +
-        # transformers (~580 MB) for neural features we don't use. This path keeps the
-        # process small (BM25 needs only the JVM).
+        # Query Lucene via Anserini's SimpleSearcher directly (through jnius): BM25
+        # needs only the JVM, so the process stays small — no torch/transformers.
         if self._searcher is None:
-            ensure_jdk()
-            from pyserini.pyclass import autoclass
+            from ..anserini import autoclass
 
             if not any(self.index_dir.glob("segments*")):
                 raise FileNotFoundError(
@@ -261,7 +255,7 @@ class SparseIndex:
 
     def _fields_map(self):
         """java.util.HashMap<String,Float> of field -> boost for multi-field search."""
-        from pyserini.pyclass import autoclass
+        from ..anserini import autoclass
 
         HashMap = autoclass("java.util.HashMap")
         Float = autoclass("java.lang.Float")
@@ -272,7 +266,7 @@ class SparseIndex:
 
     def _index_reader(self):
         if self._reader is None:
-            from pyserini.pyclass import autoclass
+            from ..anserini import autoclass
 
             FSDirectory = autoclass("org.apache.lucene.store.FSDirectory")
             Paths = autoclass("java.nio.file.Paths")
@@ -292,7 +286,7 @@ class SparseIndex:
         import math
         from collections import defaultdict
 
-        from pyserini.pyclass import autoclass
+        from ..anserini import autoclass
 
         Term = autoclass("org.apache.lucene.index.Term")
         reader = self._index_reader()

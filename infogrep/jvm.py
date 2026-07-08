@@ -1,19 +1,24 @@
 """Locate a suitable JDK and export ``JAVA_HOME`` before Pyserini starts the JVM.
 
-Pyserini (Anserini/Lucene) needs JDK 21+. macOS often defaults to an older JDK, so we
-detect a compatible one and set ``JAVA_HOME`` in-process. This must run *before* anything
-imports ``pyserini``/``jnius`` (the JVM boots at import time).
+Anserini/Lucene needs JDK 21+. The system default `java` is often older (or absent), so
+we detect a compatible install and set ``JAVA_HOME`` in-process. This must run *before*
+anything imports ``jnius`` (the JVM boots at import time). Covers both
+macOS (Homebrew, ``java_home``) and Linux (``/usr/lib/jvm``, ``update-alternatives``,
+Linuxbrew).
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import sys
 from functools import lru_cache
 from pathlib import Path
 
 MIN_JDK = 21
+LINUX_JVM_DIR = Path("/usr/lib/jvm")
 
 
 def _release_version(java_home: Path) -> int | None:
@@ -31,15 +36,15 @@ def _candidates() -> list[Path]:
     if env:
         paths.append(Path(env))
 
-    # Homebrew keg (Apple Silicon + Intel layouts).
+    # Homebrew keg (macOS Apple Silicon/Intel, and Linuxbrew).
     try:
         prefix = subprocess.run(
             ["brew", "--prefix", f"openjdk@{MIN_JDK}"],
             capture_output=True, text=True, timeout=10,
         ).stdout.strip()
         if prefix:
-            paths.append(Path(prefix) / "libexec" / "openjdk.jdk" / "Contents" / "Home")
-            paths.append(Path(prefix))
+            paths.append(Path(prefix) / "libexec" / "openjdk.jdk" / "Contents" / "Home")  # macOS
+            paths.append(Path(prefix))  # Linux keg layout (JAVA_HOME == prefix)
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -56,6 +61,28 @@ def _candidates() -> list[Path]:
 
     for base in ("/opt/homebrew/opt", "/usr/local/opt"):
         paths.append(Path(base) / f"openjdk@{MIN_JDK}" / "libexec" / "openjdk.jdk" / "Contents" / "Home")
+
+    # Linux: distro packages under /usr/lib/jvm (Debian/Ubuntu, Fedora, Arch, ...).
+    if LINUX_JVM_DIR.is_dir():
+        paths.extend(sorted(LINUX_JVM_DIR.iterdir(), reverse=True))
+
+    # Linux: update-alternatives' chosen `java`, and whatever `java` resolves to on PATH
+    # (each is a bin/java symlink two levels below JAVA_HOME).
+    try:
+        alt = subprocess.run(
+            ["update-alternatives", "--list", "java"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        for line in alt.splitlines():
+            if line:
+                paths.append(Path(line).resolve().parent.parent)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    which_java = shutil.which("java")
+    if which_java:
+        paths.append(Path(which_java).resolve().parent.parent)
+
     return paths
 
 
@@ -70,8 +97,16 @@ def ensure_jdk() -> str:
                 os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
             return str(home)
 
+    if sys.platform == "darwin":
+        install_hint = f"On macOS:  brew install openjdk@{MIN_JDK}"
+    else:
+        install_hint = (
+            f"On Debian/Ubuntu:  sudo apt install openjdk-{MIN_JDK}-jdk\n"
+            f"On Fedora/RHEL:    sudo dnf install java-{MIN_JDK}-openjdk\n"
+            f"On Arch:           sudo pacman -S jdk-openjdk"
+        )
     raise RuntimeError(
         f"InfoGrep's sparse backend (Pyserini) needs JDK {MIN_JDK}+, but none was found.\n"
-        f"On macOS:  brew install openjdk@{MIN_JDK}\n"
+        f"{install_hint}\n"
         f"Then re-run, or set JAVA_HOME to a JDK {MIN_JDK}+ install."
     )

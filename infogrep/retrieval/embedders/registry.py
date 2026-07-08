@@ -17,6 +17,11 @@ def get_embedder(config: DenseConfig) -> Embedder:
 
         return HashEmbedder()
 
-    from .sentence_transformer import SentenceTransformerEmbedder
+    try:
+        from .sentence_transformer import SentenceTransformerEmbedder
+    except ImportError as exc:
+        from ..dense import DENSE_EXTRA_HINT
+
+        raise RuntimeError(DENSE_EXTRA_HINT) from exc
 
     return SentenceTransformerEmbedder(config.model_name, device=config.device)
