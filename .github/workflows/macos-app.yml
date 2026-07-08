@@ -1,0 +1,38 @@
+# Build the macOS menu-bar app and attach it to GitHub releases.
+#
+# The app is ad-hoc signed (no Apple developer account), so a downloaded copy is
+# quarantined by Gatekeeper: first launch needs right-click -> Open (one time), or
+#   xattr -d com.apple.quarantine InfoGrep.app
+name: macOS app
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: # manual runs produce a downloadable artifact for testing
+
+permissions:
+  contents: write # upload the zip as a release asset
+
+jobs:
+  build-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build InfoGrep.app
+        run: cd macos && ./build.sh
+
+      - name: Zip the app bundle
+        run: cd macos && ditto -c -k --keepParent InfoGrep.app InfoGrep.app.zip
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: InfoGrep.app
+          path: macos/InfoGrep.app.zip
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" macos/InfoGrep.app.zip --clobber

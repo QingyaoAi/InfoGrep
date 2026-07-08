@@ -63,7 +63,7 @@ func apiSearch(_ query: String, dir: String?, completion: @escaping ([SearchResu
     }.resume()
 }
 
-struct IndexEntry { let name: String; let dir: String; let indexing: Bool }
+struct IndexEntry { let name: String; let dir: String; let indexing: Bool; let scheduled: Bool }
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
@@ -128,6 +128,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         let add = NSMenuItem(title: "Index a Folder…", action: #selector(indexFolder), keyEquivalent: "i")
         add.target = self
         menu.addItem(add)
+        if let dir = selectedDir, let idx = indexes.first(where: { $0.dir == dir }) {
+            let daily = NSMenuItem(title: "Daily Re-index of \(idx.name)  (3 AM)",
+                                   action: #selector(toggleSchedule(_:)), keyEquivalent: "")
+            daily.target = self
+            daily.representedObject = dir
+            daily.state = idx.scheduled ? .on : .off  // checkmark = daily updates enabled
+            menu.addItem(daily)
+        }
         menu.addItem(.separator())
         let search = NSMenuItem(title: "Search…  (⌘⇧Space)", action: #selector(togglePanel), keyEquivalent: "")
         search.target = self
@@ -149,7 +157,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
                         list.append(IndexEntry(
                             name: (i["name"] as? String) ?? (dir as NSString).lastPathComponent,
                             dir: dir,
-                            indexing: (i["indexing"] as? Bool) ?? false))
+                            indexing: (i["indexing"] as? Bool) ?? false,
+                            scheduled: (i["scheduled"] as? Bool) ?? false))
                     }
                 }
             }
@@ -168,6 +177,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         UserDefaults.standard.set(dir, forKey: "infogrep.selectedDir")
         rebuildMenu()
         updatePlaceholder()
+    }
+
+    @objc func toggleSchedule(_ sender: NSMenuItem) {
+        guard let dir = sender.representedObject as? String,
+              let idx = indexes.first(where: { $0.dir == dir }) else { return }
+        let turnOn = !idx.scheduled
+        guard var comp = URLComponents(string: "\(kAPIBase)/api/schedule") else { return }
+        comp.queryItems = [URLQueryItem(name: "dir", value: dir),
+                           URLQueryItem(name: "on", value: turnOn ? "1" : "0")]
+        guard let u = comp.url else { return }
+        var req = URLRequest(url: u)
+        req.httpMethod = "POST"
+        URLSession.shared.dataTask(with: req) { _, _, _ in
+            DispatchQueue.main.async { self.refreshIndexes() }
+        }.resume()
     }
 
     @objc func indexFolder() {

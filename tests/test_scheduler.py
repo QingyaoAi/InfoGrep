@@ -77,3 +77,13 @@ def test_install_rejects_non_macos(tmp_path, monkeypatch):
         assert False, "expected RuntimeError on non-macOS"
     except RuntimeError as exc:
         assert "cron" in str(exc) or "systemd" in str(exc)
+
+
+def test_is_scheduled_roundtrip(tmp_path, monkeypatch):
+    _no_launchctl(monkeypatch, tmp_path / "LaunchAgents")
+    target = tmp_path / "proj"
+    assert sched.is_scheduled(target) is False
+    sched.install(target, hour=3, minute=0)
+    assert sched.is_scheduled(target) is True
+    sched.uninstall(target)
+    assert sched.is_scheduled(target) is False

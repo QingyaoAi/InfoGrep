@@ -78,6 +78,8 @@ PAGE = """<!doctype html>
     <input type="text" id="q" placeholder="Search…" autofocus autocomplete="off"/>
     <select id="dir" title="which indexed folder to search"></select>
     <button id="adddir" type="button" title="Index another folder">＋ folder</button>
+    <label class="chk" title="Re-index this folder daily at 03:00 (incremental, macOS)">
+      <input type="checkbox" id="sched"/> ⏰ daily</label>
     <select id="mode" title="retrieval mode">
       <option value="hybrid">hybrid</option>
       <option value="sparse">sparse</option>
@@ -94,19 +96,35 @@ PAGE = """<!doctype html>
 </main>
 <script>
 const $ = id => document.getElementById(id);
+let SCHEDULED = {};  // dir -> daily reindex on/off
 function curDir(){ return $('dir').value || ''; }
+function syncSched(){ $('sched').checked = !!SCHEDULED[curDir()]; }
 async function loadIndexes(){
   try{
     const d = await (await fetch('/api/indexes')).json();
     const sel = $('dir'); const prev = sel.value || d.default;
     sel.innerHTML='';
+    SCHEDULED = {};
     for(const i of d.indexes){
+      SCHEDULED[i.dir] = !!i.scheduled;
       const o=document.createElement('option'); o.value=i.dir;
       o.textContent=i.name + (i.indexing?' (indexing…)':'') + (i.n_files!=null?'  ·  '+i.n_files+' files':'');
       sel.appendChild(o);
     }
     if([...sel.options].some(o=>o.value===prev)) sel.value=prev;
+    syncSched();
   }catch(e){}
+}
+async function toggleSchedule(){
+  const dir = curDir(); if(!dir){ $('sched').checked=false; return; }
+  const on = $('sched').checked;
+  try{
+    const p = new URLSearchParams({dir, on: on?'1':'0'});
+    const r = await (await fetch('/api/schedule?'+p, {method:'POST'})).json();
+    if(!r.ok){ $('meta').textContent = 'Daily reindex: '+(r.error||'failed'); $('sched').checked = !on; return; }
+    SCHEDULED[dir] = !!r.scheduled;
+    $('meta').textContent = r.scheduled ? 'Daily reindex ON (03:00) — '+dir : 'Daily reindex off — '+dir;
+  }catch(e){ $('meta').textContent = 'Daily reindex: '+e; $('sched').checked = !on; }
 }
 async function status(){
   try{ const s = await (await fetch('/api/status?dir='+encodeURIComponent(curDir()))).json();
@@ -167,7 +185,8 @@ async function reveal(path){
 }
 $('f').addEventListener('submit', search);
 $('adddir').addEventListener('click', addFolder);
-$('dir').addEventListener('change', ()=>{ status(); $('q').focus(); });
+$('sched').addEventListener('change', toggleSchedule);
+$('dir').addEventListener('change', ()=>{ status(); syncSched(); $('q').focus(); });
 loadIndexes().then(status);
 </script>
 </body>
@@ -193,6 +212,7 @@ def _make_handler(directory: Path):
             return eng
 
     def list_indexes() -> list[dict]:
+        from . import scheduler
         from .indexer import Indexer
 
         out: list[dict] = []
@@ -203,7 +223,11 @@ def _make_handler(directory: Path):
                 if not src.is_file():
                     continue
                 target = src.read_text().strip()
-                info = {"dir": target, "name": Path(target).name}
+                info = {
+                    "dir": target,
+                    "name": Path(target).name,
+                    "scheduled": scheduler.is_scheduled(Path(target)),
+                }
                 try:  # fast: read the manifest, don't walk the filesystem
                     st = Indexer(Config.load(target)).status(check_staleness=False)
                     info.update(indexed=st.get("indexed", False),
@@ -240,6 +264,27 @@ def _make_handler(directory: Path):
         threading.Thread(target=run, daemon=True).start()
         return {"ok": True, "status": "started", "dir": key}
 
+    def set_schedule(d: str, on: bool, at: str) -> dict:
+        """Enable/disable the daily incremental reindex agent for a folder (macOS)."""
+        from . import scheduler
+
+        if not d:
+            return {"ok": False, "error": "no directory"}
+        target = Path(d).expanduser().resolve()
+        try:
+            if on:
+                hour, minute = (int(x) for x in at.split(":", 1))
+                scheduler.install(target, hour=hour, minute=minute)
+            else:
+                scheduler.uninstall(target)
+        except ValueError:
+            return {"ok": False, "error": f"invalid time: {at!r} (use HH:MM)"}
+        except RuntimeError as exc:  # e.g. not macOS
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "scheduled": scheduler.is_scheduled(target), "dir": str(target)}
+
     class Handler(BaseHTTPRequestHandler):
         # Quiet by default (no per-request stderr logging).
         def log_message(self, *args):  # noqa: D401
@@ -270,17 +315,26 @@ def _make_handler(directory: Path):
                 self._json({"indexes": list_indexes(), "default": default_dir})
             elif parsed.path == "/api/index":  # start (re)indexing a folder
                 self._json(start_index((qs.get("dir", [""])[0]).strip()))
+            elif parsed.path == "/api/schedule":  # toggle daily reindex for a folder
+                self._json(self._set_schedule(qs))
             else:
                 self._json({"error": "not found"}, code=404)
 
-        # POST also accepts /api/index (the action that changes state).
+        # POST also accepts the actions that change state.
         def do_POST(self):
             parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
             if parsed.path == "/api/index":
-                qs = parse_qs(parsed.query)
                 self._json(start_index((qs.get("dir", [""])[0]).strip()))
+            elif parsed.path == "/api/schedule":
+                self._json(self._set_schedule(qs))
             else:
                 self._json({"error": "not found"}, code=404)
+
+        def _set_schedule(self, qs: dict) -> dict:
+            on = (qs.get("on", ["1"])[0]).lower() in ("1", "true", "on")
+            at = (qs.get("at", ["03:00"])[0]).strip() or "03:00"
+            return set_schedule((qs.get("dir", [""])[0]).strip(), on, at)
 
         def _open(self, qs: dict) -> dict:
             path = (qs.get("path", [""])[0]).strip()

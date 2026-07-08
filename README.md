@@ -162,11 +162,19 @@ This always: runs `uv sync --extra dense`, checks for JDK 21, and registers the 
 Claude Code (if `claude` is on `PATH`).
 
 **On macOS**, it also builds a Spotlight-style menu-bar app and installs `launchd` login
-agents that start the app and the web UI (search backend) at login. Press **⌘⇧Space** for the
+agents that start the app and the web UI (search backend) at login. Daily incremental
+reindexing is opt-in per folder: toggle it in the web UI or the menu-bar app, or use
+`infogrep schedule install/uninstall/list`. Press **⌘⇧Space** for the
 launcher, or open <http://127.0.0.1:7421>; add folders to search from the app (**Index a
 Folder…**) or the web UI (**＋ folder**). Additionally requires Xcode Command Line Tools
 (`xcode-select --install`); the app is ad-hoc signed, so the first launch needs a right-click
 → **Open** (one time).
+
+Don't want to compile the app? Every [GitHub release](https://github.com/QingyaoAi/InfoGrep/releases)
+ships a prebuilt `InfoGrep.app.zip` — unzip, drag to `/Applications`, then right-click →
+**Open** on first launch (it's ad-hoc signed; or `xattr -d com.apple.quarantine
+/Applications/InfoGrep.app`). The app is just the launcher UI — it needs the backend running
+(`infogrep serve`, or the login agent that `./install.sh` sets up).
 
 **On Linux**, there's no menu-bar app and nothing is auto-started (no bundled systemd/cron
 integration yet) — run the web UI yourself when you want it:

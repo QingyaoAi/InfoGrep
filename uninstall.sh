@@ -12,12 +12,13 @@ LA="$HOME/Library/LaunchAgents"
 
 say() { printf "\033[1;34m▸\033[0m %s\n" "$*"; }
 
-# 1) Stop + remove login agents ----------------------------------------------
-for label in com.infogrep.webui com.infogrep.launcher; do
-  if [ -f "$LA/$label.plist" ]; then
-    say "Removing login agent $label…"
-    launchctl unload "$LA/$label.plist" 2>/dev/null || true
-    rm -f "$LA/$label.plist"
+# 1) Stop + remove login agents (incl. per-directory daily reindex agents) ----
+for plist in "$LA"/com.infogrep.webui.plist "$LA"/com.infogrep.launcher.plist \
+             "$LA"/com.infogrep.reindex.*.plist; do
+  if [ -f "$plist" ]; then
+    say "Removing login agent $(basename "$plist" .plist)…"
+    launchctl unload "$plist" 2>/dev/null || true
+    rm -f "$plist"
   fi
 done
 

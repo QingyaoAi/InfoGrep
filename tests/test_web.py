@@ -165,3 +165,55 @@ def test_index_endpoint_builds_a_new_folder(tmp_path):
         assert res["results"][0]["path"] == "memo.txt"
     finally:
         httpd.shutdown()
+
+
+def _post(port, path):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method="POST")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.status, r.read().decode("utf-8")
+
+
+def _fake_launchd(monkeypatch, agents_dir):
+    import infogrep.scheduler as sched
+
+    monkeypatch.setattr(sched, "LAUNCH_AGENTS", agents_dir)
+    monkeypatch.setattr(sched.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(sched.sys, "platform", "darwin")
+
+
+def test_schedule_toggle_api(tmp_path, monkeypatch):
+    _fake_launchd(monkeypatch, tmp_path / "LaunchAgents")
+    target = _make_indexed(tmp_path / "docs", {"a.txt": "alpha beta"})
+    httpd, port = _start(target)
+    try:
+        q = urllib.parse.quote(str(target))
+        # Turn daily reindex on -> agent plist written, /api/indexes reflects it.
+        _, body = _post(port, f"/api/schedule?dir={q}&on=1")
+        out = json.loads(body)
+        assert out["ok"] is True and out["scheduled"] is True
+        _, body = _get(port, "/api/indexes")
+        entry = [i for i in json.loads(body)["indexes"] if i["dir"] == str(target)][0]
+        assert entry["scheduled"] is True
+        # Turn it off again -> agent removed.
+        _, body = _post(port, f"/api/schedule?dir={q}&on=0")
+        out = json.loads(body)
+        assert out["ok"] is True and out["scheduled"] is False
+    finally:
+        httpd.shutdown()
+
+
+def test_schedule_api_rejects_non_macos(tmp_path, monkeypatch):
+    import infogrep.scheduler as sched
+
+    monkeypatch.setattr(sched, "LAUNCH_AGENTS", tmp_path / "LaunchAgents")
+    monkeypatch.setattr(sched.sys, "platform", "linux")
+    target = _make_indexed(tmp_path / "docs", {"a.txt": "alpha"})
+    httpd, port = _start(target)
+    try:
+        q = urllib.parse.quote(str(target))
+        _, body = _post(port, f"/api/schedule?dir={q}&on=1")
+        out = json.loads(body)
+        assert out["ok"] is False
+        assert "cron" in out["error"] or "systemd" in out["error"]
+    finally:
+        httpd.shutdown()

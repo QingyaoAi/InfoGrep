@@ -82,6 +82,11 @@ def install(directory: Path, hour: int = 3, minute: int = 0) -> Path:
     return path
 
 
+def is_scheduled(directory: Path) -> bool:
+    """Whether a daily reindex agent is installed for ``directory``."""
+    return _plist_path(Path(directory).expanduser().resolve()).is_file()
+
+
 def uninstall(directory: Path) -> bool:
     """Remove the daily reindex agent for ``directory``. Returns True if one existed."""
     directory = Path(directory).expanduser().resolve()
