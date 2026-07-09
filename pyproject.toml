@@ -1,6 +1,6 @@
 [project]
 name = "infogrep"
-version = "0.0.1"
+version = "0.0.2"
 description = "Local-first content search engine (sparse + dense + knowledge base) for coding agents"
 readme = "README.md"
 requires-python = ">=3.10"
