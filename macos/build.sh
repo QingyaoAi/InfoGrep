@@ -31,7 +31,7 @@ if [ "$STANDALONE" = 1 ]; then
   command -v uv >/dev/null 2>&1 || { echo "error: --standalone needs uv (https://astral.sh/uv)"; exit 1; }
 
   # 1) Relocatable CPython (python-build-standalone via uv's managed pythons).
-  echo "bundling Python $PYVER…"
+  echo "bundling Python ${PYVER}..."
   uv python install "$PYVER" --quiet
   # Resolve the *managed* interpreter, never a dev venv (which would drag its whole
   # site-packages, e.g. torch, into the bundle) — hence no VIRTUAL_ENV / project.
