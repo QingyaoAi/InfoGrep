@@ -170,11 +170,14 @@ Folder…**) or the web UI (**＋ folder**). Additionally requires Xcode Command
 (`xcode-select --install`); the app is ad-hoc signed, so the first launch needs a right-click
 → **Open** (one time).
 
-Don't want to compile the app? Every [GitHub release](https://github.com/QingyaoAi/InfoGrep/releases)
-ships a prebuilt `InfoGrep.app.zip` — unzip, drag to `/Applications`, then right-click →
-**Open** on first launch (it's ad-hoc signed; or `xattr -d com.apple.quarantine
-/Applications/InfoGrep.app`). The app is just the launcher UI — it needs the backend running
-(`infogrep serve`, or the login agent that `./install.sh` sets up).
+Don't want to install anything? Every [GitHub release](https://github.com/QingyaoAi/InfoGrep/releases)
+ships a prebuilt **standalone** `InfoGrep.app.zip` (Apple Silicon) that bundles the whole
+backend — Python runtime, InfoGrep, and a Java runtime — and starts its own local server.
+Unzip, drag to `/Applications`, then right-click → **Open** on first launch (it's ad-hoc
+signed; or `xattr -dr com.apple.quarantine /Applications/InfoGrep.app`). Press **⌘⇧Space**
+and index a folder from the 🔎 menu — no `uv`, Python, or JDK needed. (Dense/semantic
+search stays a pip extra — torch is too big to ship; the standalone app searches with the
+keyword + knowledge-base + folder retrievers.)
 
 **On Linux**, there's no menu-bar app and nothing is auto-started (no bundled systemd/cron
 integration yet) — run the web UI yourself when you want it:

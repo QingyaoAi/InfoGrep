@@ -67,6 +67,11 @@ def test_status_api(tmp_path):
         assert info["indexed"] is True
         assert info["n_files"] == 2
         assert info["dir"].endswith(str(tmp_path.name))
+        # Staleness (a full folder walk, slow on big trees) is opt-in via &stale=1.
+        assert "stale" not in info
+        _, body = _get(port, "/api/status?stale=1")
+        info = json.loads(body)
+        assert info["stale"] is False and info["pending"] == 0
     finally:
         httpd.shutdown()
 
@@ -142,6 +147,39 @@ def test_list_indexes_and_dir_scoped_search(tmp_path):
         httpd.shutdown()
 
 
+def test_default_falls_back_to_an_indexed_folder(tmp_path):
+    # Server started on a folder that was never indexed: /api/indexes must point
+    # clients at an indexed folder instead (searching the raw default finds nothing).
+    b = _make_indexed(tmp_path / "beta", {"car.txt": "the sedan has a strong engine"})
+    unindexed = tmp_path / "plain"
+    unindexed.mkdir()
+    httpd, port = _start(unindexed)
+    try:
+        payload = _q(port, "/api/indexes")
+        assert payload["default"] == str(b)
+    finally:
+        httpd.shutdown()
+
+
+def test_manifest_stats_cached_by_index_run(tmp_path):
+    # stats() must not re-COUNT a multi-GB manifest on every call: cached counts are
+    # reused within one index generation and refreshed after the next reindex.
+    from infogrep.manifest import Manifest
+
+    target = _make_indexed(tmp_path / "docs", {"a.txt": "alpha", "b.txt": "beta"})
+    cfg = Config.load(target)
+    with Manifest(cfg.manifest_path) as m:
+        assert m.stats()["n_files"] == 2
+        assert json.loads(m.get_meta("stats_cache"))["n_files"] == 2
+        # A poisoned cache proves the cached value is what's served...
+        m.set_meta("stats_cache", m.get_meta("stats_cache").replace('"n_files": 2', '"n_files": 99'))
+        assert m.stats()["n_files"] == 99
+    (target / "c.txt").write_text("gamma")
+    Indexer(Config.load(target)).reindex()
+    with Manifest(cfg.manifest_path) as m:  # ...and a reindex refreshes it
+        assert m.stats()["n_files"] == 3
+
+
 def test_index_endpoint_builds_a_new_folder(tmp_path):
     c = tmp_path / "gamma"
     c.mkdir()
@@ -215,5 +253,43 @@ def test_schedule_api_rejects_non_macos(tmp_path, monkeypatch):
         out = json.loads(body)
         assert out["ok"] is False
         assert "cron" in out["error"] or "systemd" in out["error"]
+    finally:
+        httpd.shutdown()
+
+
+def test_forget_endpoint_removes_index(tmp_path, monkeypatch):
+    _fake_launchd(monkeypatch, tmp_path / "LaunchAgents")
+    target = _make_indexed(tmp_path / "docs", {"a.txt": "alpha"})
+    cfg = Config.load(target)
+    assert cfg.index_dir.is_dir()
+    httpd, port = _start(target)
+    try:
+        q = urllib.parse.quote(str(target))
+        _, body = _post(port, f"/api/forget?dir={q}")
+        assert json.loads(body)["ok"] is True
+        assert not cfg.index_dir.exists()  # side-car index gone
+        assert (tmp_path / "docs" / "a.txt").exists()  # source folder untouched
+        _, body = _get(port, "/api/indexes")
+        payload = json.loads(body)
+        assert payload["version"]  # UI shows the backend version
+        assert all(i["dir"] != str(target) for i in payload["indexes"])
+    finally:
+        httpd.shutdown()
+
+
+def test_full_rebuild_via_index_endpoint(tmp_path):
+    target = _make_indexed(tmp_path / "docs", {"a.txt": "alpha"})
+    httpd, port = _start(target)
+    try:
+        q = urllib.parse.quote(str(target))
+        _, body = _post(port, f"/api/index?dir={q}&full=1")
+        assert json.loads(body)["ok"] is True
+        for _ in range(100):  # wait for the background rebuild to finish
+            _, body = _get(port, f"/api/status?dir={q}")
+            if not json.loads(body).get("indexing"):
+                break
+            time.sleep(0.1)
+        info = json.loads(body)
+        assert info["indexed"] is True and info["n_files"] == 1
     finally:
         httpd.shutdown()

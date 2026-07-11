@@ -7,22 +7,38 @@ hotkey, type, and open the matching file.
 - **↑ / ↓** navigate · **↵** reveal the selected file in Finder · **Esc** dismiss
 - Menu-bar 🔎 icon → Search… / Quit
 
-It's a thin UI client over the InfoGrep web API, so the backend must be running:
+## Download & run (standalone app)
+
+The GitHub-release `InfoGrep.app.zip` is **self-contained** (Apple Silicon): it bundles a
+Python runtime, the InfoGrep backend, and a Java runtime, and starts its own local server
+when nothing is listening on port 7421 (the server stops when the app quits). Unzip, then
+first launch needs one Gatekeeper approval because the app is not notarized:
+
+```bash
+xattr -dr com.apple.quarantine InfoGrep.app   # or right-click → Open, once
+open InfoGrep.app                              # menu-bar 🔎 appears; press ⌘⇧-Space
+```
+
+Pick **Index a Folder…** from the 🔎 menu to build your first index. (Dense/semantic
+search isn't in the bundle — it needs torch; use the pip install for that. The Anserini
+jar for keyword search is downloaded once, ~112 MB, on first indexing.)
+
+## Build & run from source
+
+```bash
+./build.sh               # thin app: UI only, needs `infogrep serve` running separately
+./build.sh --standalone  # self-contained app (needs uv + a JDK 21 on the build machine)
+open InfoGrep.app        # launches the menu-bar agent; press ⌘⇧-Space
+```
+
+The thin app is a UI client over the InfoGrep web API, so the backend must be running:
 
 ```bash
 infogrep serve --dir <indexed-dir>        # default http://127.0.0.1:7421
 ```
 
-The repo's top-level **`./install.sh`** does all of this for you — builds the app, installs
-it to `/Applications`, and runs both the backend and the app at login. This README covers
-building/running it by hand.
-
-## Build & run
-
-```bash
-./build.sh            # compiles InfoGrep.app with swiftc (needs the Xcode CLT)
-open InfoGrep.app     # launches the menu-bar agent; press ⌘⇧-Space
-```
+The repo's top-level **`./install.sh`** does all of this for you — builds the thin app,
+installs it to `/Applications`, and runs both the backend and the app at login.
 
 ## Customize
 

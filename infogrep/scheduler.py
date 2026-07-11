@@ -13,6 +13,7 @@ cron job or systemd timer instead, e.g.:
 from __future__ import annotations
 
 import hashlib
+import os
 import plistlib
 import subprocess
 import sys
@@ -45,10 +46,16 @@ def _plist_path(directory: Path) -> Path:
 def _agent_env() -> dict[str, str]:
     """Minimal environment so launchd can find brew (JDK), the venv, and the HF cache."""
     venv_bin = str(Path(sys.executable).parent)
-    return {
+    env = {
         "PATH": f"{venv_bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
         "HOME": str(Path.home()),
     }
+    # The standalone app bundle runs the backend with PYTHONPATH/JAVA_HOME pointing
+    # into the .app; the agent re-runs the same interpreter, so it needs them too.
+    for key in ("PYTHONPATH", "PYTHONNOUSERSITE", "JAVA_HOME", "INFOGREP_HOME"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    return env
 
 
 def install(directory: Path, hour: int = 3, minute: int = 0) -> Path:

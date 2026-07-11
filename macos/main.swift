@@ -3,11 +3,17 @@
 // A menu-bar (agent) app: press the global hotkey (default ⌘⇧-Space) to pop a search
 // panel, type to search the local InfoGrep web API, ↑/↓ to navigate, ↵ to reveal the
 // file in Finder, Esc to dismiss. The backend is `infogrep serve` (http://127.0.0.1:7421).
+//
+// Standalone builds (build.sh --standalone) ship the backend inside the app bundle
+// (Resources/python + backend + jre); if nothing answers on the port at launch, the
+// app starts that bundled server itself and stops it on quit. Thin builds have no
+// bundled backend and rely on an externally managed `infogrep serve` as before.
 
 import AppKit
 import Carbon.HIToolbox
 
-let kAPIBase = "http://127.0.0.1:7421"
+let kPort = "7421"
+let kAPIBase = "http://127.0.0.1:\(kPort)"
 let kSearchMode = "hybrid"
 let kMaxResults = 25
 
@@ -32,38 +38,49 @@ struct SearchResult {
     var displayPath: String { absPath ?? path }
 }
 
-func apiSearch(_ query: String, dir: String?, completion: @escaping ([SearchResult]) -> Void) {
-    guard var comp = URLComponents(string: "\(kAPIBase)/api/search") else { completion([]); return }
+// Calls back with the results plus an error message when the search failed (server
+// down, backend error), so the panel can say what went wrong instead of showing nothing.
+func apiSearch(_ query: String, dir: String?,
+               completion: @escaping ([SearchResult], String?) -> Void) {
+    guard var comp = URLComponents(string: "\(kAPIBase)/api/search") else { completion([], nil); return }
     comp.queryItems = [
         URLQueryItem(name: "q", value: query),
         URLQueryItem(name: "mode", value: kSearchMode),
         URLQueryItem(name: "k", value: String(kMaxResults)),
     ]
     if let dir, !dir.isEmpty { comp.queryItems?.append(URLQueryItem(name: "dir", value: dir)) }
-    guard let url = comp.url else { completion([]); return }
+    guard let url = comp.url else { completion([], nil); return }
     var req = URLRequest(url: url)
-    req.timeoutInterval = 10
-    URLSession.shared.dataTask(with: req) { data, _, _ in
+    req.timeoutInterval = 30  // first search after a (re)index can be slow to warm up
+    URLSession.shared.dataTask(with: req) { data, _, err in
         var out: [SearchResult] = []
-        if let data = data,
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let arr = obj["results"] as? [[String: Any]] {
-            for r in arr {
-                out.append(SearchResult(
-                    path: r["path"] as? String ?? "",
-                    absPath: r["abs_path"] as? String,
-                    snippet: r["snippet"] as? String ?? "",
-                    score: r["score"] as? Double ?? 0,
-                    page: r["page"] as? Int,
-                    ext: r["ext"] as? String,
-                    retriever: r["retriever"] as? String ?? ""))
+        var msg: String?
+        if err != nil {
+            msg = "Can't reach InfoGrep — is `infogrep serve` running?"
+        } else if let data = data,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let e = obj["error"] as? String, !e.isEmpty { msg = e }
+            if let arr = obj["results"] as? [[String: Any]] {
+                for r in arr {
+                    out.append(SearchResult(
+                        path: r["path"] as? String ?? "",
+                        absPath: r["abs_path"] as? String,
+                        snippet: r["snippet"] as? String ?? "",
+                        score: r["score"] as? Double ?? 0,
+                        page: r["page"] as? Int,
+                        ext: r["ext"] as? String,
+                        retriever: r["retriever"] as? String ?? ""))
+                }
             }
+        } else {
+            msg = "Unexpected response from the InfoGrep server"
         }
-        DispatchQueue.main.async { completion(out) }
+        DispatchQueue.main.async { completion(out, msg) }
     }.resume()
 }
 
-struct IndexEntry { let name: String; let dir: String; let indexing: Bool; let scheduled: Bool }
+struct IndexEntry { let name: String; let dir: String; let indexed: Bool
+                    let indexing: Bool; let scheduled: Bool }
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
@@ -71,6 +88,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     var statusItem: NSStatusItem!
     var panel: NSPanel!
     var field: NSTextField!
+    var statusLabel: NSTextField!
     var table: NSTableView!
     var results: [SearchResult] = []
     var hotKeyRef: EventHotKeyRef?
@@ -90,7 +108,76 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         setupStatusItem()
         setupPanel()
         registerHotKey()
-        refreshIndexes()
+        ensureBackend()
+    }
+
+    func applicationWillTerminate(_ note: Notification) {
+        serverProcess?.terminate()  // only set when this app started the bundled server
+    }
+
+    // MARK: bundled backend (standalone builds)
+    var serverProcess: Process?
+
+    /// Reach the API; if nothing answers and this build bundles a backend, start it.
+    func ensureBackend() {
+        pingServer { up in
+            if up { self.refreshIndexes(); return }
+            self.startBundledServer()
+            self.waitForBackend(until: Date().addingTimeInterval(40))
+        }
+    }
+
+    func pingServer(_ done: @escaping @MainActor (Bool) -> Void) {
+        guard let url = URL(string: "\(kAPIBase)/api/status") else { return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2
+        URLSession.shared.dataTask(with: req) { data, _, err in
+            let up = (err == nil && data != nil)
+            DispatchQueue.main.async { done(up) }
+        }.resume()
+    }
+
+    func startBundledServer() {
+        if let p = serverProcess, p.isRunning { return }
+        guard let res = Bundle.main.resourcePath else { return }
+        let py = res + "/python/bin/python3"
+        guard FileManager.default.isExecutableFile(atPath: py) else { return }  // thin build
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: py)
+        proc.arguments = ["-m", "infogrep", "serve",
+                          "--dir", NSHomeDirectory(), "--port", kPort,
+                          "--exit-with-parent"]  // server dies with the app, even on crash/SIGKILL
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONPATH"] = res + "/backend"
+        env["PYTHONNOUSERSITE"] = "1"
+        if FileManager.default.isExecutableFile(atPath: res + "/jre/bin/java") {
+            env["JAVA_HOME"] = res + "/jre"
+        }
+        proc.environment = env
+        let logDir = NSHomeDirectory() + "/.infogrep"
+        try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+        let log = logDir + "/app-server.log"
+        if !FileManager.default.fileExists(atPath: log) {
+            FileManager.default.createFile(atPath: log, contents: nil)
+        }
+        if let h = FileHandle(forWritingAtPath: log) {
+            h.seekToEndOfFile()
+            proc.standardOutput = h
+            proc.standardError = h
+        }
+        do { try proc.run(); serverProcess = proc }
+        catch { NSLog("InfoGrep: could not start the bundled server: \(error)") }
+    }
+
+    func waitForBackend(until deadline: Date) {
+        pingServer { up in
+            if up { self.refreshIndexes(); return }
+            if Date() < deadline {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                    self.waitForBackend(until: deadline)
+                }
+            }
+        }
     }
 
     // MARK: menu bar
@@ -117,7 +204,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
             menu.addItem(none)
         }
         for idx in indexes {
-            let title = "   " + idx.name + (idx.indexing ? "  (indexing…)" : "")
+            let title = "   " + idx.name
+                + (idx.indexing ? "  (indexing…)" : (idx.indexed ? "" : "  (not indexed)"))
             let item = NSMenuItem(title: title, action: #selector(selectIndex(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = idx.dir
@@ -157,6 +245,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
                         list.append(IndexEntry(
                             name: (i["name"] as? String) ?? (dir as NSString).lastPathComponent,
                             dir: dir,
+                            indexed: (i["indexed"] as? Bool) ?? false,
                             indexing: (i["indexing"] as? Bool) ?? false,
                             scheduled: (i["scheduled"] as? Bool) ?? false))
                     }
@@ -164,7 +253,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
             }
             DispatchQueue.main.async {
                 self.indexes = list
-                if self.selectedDir == nil { self.selectedDir = defaultDir }
+                // Searching a folder without an index silently returns nothing, so if
+                // the remembered selection isn't searchable (gone, or never indexed and
+                // not being built), fall back to the server default or any indexed folder.
+                func usable(_ d: String?) -> String? {
+                    guard let d, let e = list.first(where: { $0.dir == d }),
+                          e.indexed || e.indexing else { return nil }
+                    return d
+                }
+                if usable(self.selectedDir) == nil {
+                    let pick = usable(defaultDir) ?? list.first(where: { $0.indexed })?.dir
+                    self.selectedDir = pick
+                    if let pick { UserDefaults.standard.set(pick, forKey: "infogrep.selectedDir") }
+                }
                 self.rebuildMenu()
                 self.updatePlaceholder()
             }
@@ -278,6 +379,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         table.doubleAction = #selector(openSelected)
         scroll.documentView = table
         blur.addSubview(scroll)
+
+        // Feedback line under the search field: errors and "no results" (hidden otherwise).
+        statusLabel = NSTextField(labelWithString: "")
+        statusLabel.frame = NSRect(x: 16, y: h - 100, width: w - 32, height: 20)
+        statusLabel.font = NSFont.systemFont(ofSize: 13)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.alignment = .center
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.autoresizingMask = [.width, .minYMargin]
+        statusLabel.isHidden = true
+        blur.addSubview(statusLabel)
+    }
+
+    func showStatus(_ message: String?) {
+        statusLabel.stringValue = message ?? ""
+        statusLabel.isHidden = (message == nil)
     }
 
     // MARK: hotkey
@@ -317,16 +434,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     func controlTextDidChange(_ note: Notification) {
         let q = field.stringValue.trimmingCharacters(in: .whitespaces)
         debounce?.cancel()
-        if q.isEmpty { results = []; table.reloadData(); return }
+        if q.isEmpty { results = []; table.reloadData(); showStatus(nil); return }
         seq += 1
         let mySeq = seq
         let dir = selectedDir
         let work = DispatchWorkItem { [weak self] in
-            apiSearch(q, dir: dir) { res in
+            apiSearch(q, dir: dir) { res, err in
                 guard let self, mySeq == self.seq else { return }
                 self.results = res
                 self.table.reloadData()
-                if !res.isEmpty { self.table.selectRowIndexes([0], byExtendingSelection: false) }
+                if let err {
+                    self.showStatus(err)
+                    self.ensureBackend()  // restart the bundled server if it died
+                } else if res.isEmpty {
+                    self.showStatus(self.indexes.contains(where: { $0.indexed })
+                        ? "No results in \(self.currentFolderName())"
+                        : "No indexes yet — choose “Index a Folder…” from the 🔎 menu")
+                } else {
+                    self.showStatus(nil)
+                    self.table.selectRowIndexes([0], byExtendingSelection: false)
+                }
             }
         }
         debounce = work

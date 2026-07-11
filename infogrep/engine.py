@@ -202,10 +202,10 @@ class SearchEngine:
 
     # -- maintenance -------------------------------------------------------
 
-    def status(self) -> dict:
+    def status(self, check_staleness: bool = True) -> dict:
         from .indexer import Indexer
 
-        return Indexer(self.config).status()
+        return Indexer(self.config).status(check_staleness=check_staleness)
 
     def reindex(self, full: bool = False) -> dict:
         from .indexer import Indexer

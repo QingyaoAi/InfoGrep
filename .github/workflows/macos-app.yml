@@ -1,8 +1,12 @@
-# Build the macOS menu-bar app and attach it to GitHub releases.
+# Build the standalone macOS menu-bar app and attach it to GitHub releases.
+#
+# The standalone build (build.sh --standalone) bundles a Python runtime, the infogrep
+# backend, and a jlink'd Java runtime, and starts its own server — download, open, done.
+# Apple Silicon only (macos-latest runners are arm64).
 #
 # The app is ad-hoc signed (no Apple developer account), so a downloaded copy is
 # quarantined by Gatekeeper: first launch needs right-click -> Open (one time), or
-#   xattr -d com.apple.quarantine InfoGrep.app
+#   xattr -dr com.apple.quarantine InfoGrep.app
 name: macOS app
 
 on:
@@ -19,11 +23,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build InfoGrep.app
-        run: cd macos && ./build.sh
+      - uses: astral-sh/setup-uv@v5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Build standalone InfoGrep.app
+        run: cd macos && ./build.sh --standalone
 
       - name: Zip the app bundle
         run: cd macos && ditto -c -k --keepParent InfoGrep.app InfoGrep.app.zip
+
+      - name: Smoke-test the bundled backend
+        run: |
+          RES="macos/InfoGrep.app/Contents/Resources"
+          PYTHONPATH="$RES/backend" PYTHONNOUSERSITE=1 \
+            "$RES/python/bin/python3" -m infogrep --help >/dev/null
+          test -x "$RES/jre/bin/java"
 
       - name: Upload as workflow artifact
         uses: actions/upload-artifact@v4

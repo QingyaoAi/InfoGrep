@@ -9,6 +9,7 @@ Everything is disk-backed; nothing is held in memory beyond the current file's p
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -221,11 +222,35 @@ class Manifest:
     # -- stats -------------------------------------------------------------
 
     def stats(self) -> dict:
+        # COUNT(*) scans the whole passages b-tree — seconds on a multi-GB manifest —
+        # so cache the counts in meta, keyed to last_indexed_at (counts only change
+        # when an indexing run finishes, which also refreshes last_indexed_at).
+        last_indexed_at = self.get_meta("last_indexed_at")
+        out = {
+            "index_version": int(self.get_meta("index_version", "0")),
+            "last_indexed_at": last_indexed_at,
+        }
+        cached = self.get_meta("stats_cache")
+        if cached and last_indexed_at:
+            try:
+                c = json.loads(cached)
+                if c.get("last_indexed_at") == last_indexed_at:
+                    out["n_files"] = int(c["n_files"])
+                    out["n_passages"] = int(c["n_passages"])
+                    return out
+            except (ValueError, KeyError, TypeError):
+                pass
         n_files = self._conn.execute("SELECT COUNT(*) AS c FROM files").fetchone()["c"]
         n_passages = self._conn.execute("SELECT COUNT(*) AS c FROM passages").fetchone()["c"]
-        return {
-            "n_files": n_files,
-            "n_passages": n_passages,
-            "index_version": int(self.get_meta("index_version", "0")),
-            "last_indexed_at": self.get_meta("last_indexed_at"),
-        }
+        out["n_files"] = n_files
+        out["n_passages"] = n_passages
+        if last_indexed_at:
+            try:
+                self.set_meta(
+                    "stats_cache",
+                    json.dumps({"last_indexed_at": last_indexed_at,
+                                "n_files": n_files, "n_passages": n_passages}),
+                )
+            except sqlite3.OperationalError:
+                pass  # read-only situation or writer busy; caching is best-effort
+        return out
