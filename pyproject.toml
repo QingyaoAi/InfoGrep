@@ -1,6 +1,6 @@
 [project]
 name = "infogrep"
-version = "0.0.3"
+dynamic = ["version"]   # single source of truth: infogrep/__init__.py
 description = "Local-first content search engine (sparse + dense + knowledge base) for coding agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -56,6 +56,9 @@ infogrep = "infogrep.cli:app"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "infogrep/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["infogrep"]

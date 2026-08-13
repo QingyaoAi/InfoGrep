@@ -17,6 +17,9 @@ STANDALONE=0
 APP="InfoGrep.app"
 RES="$APP/Contents/Resources"
 PYVER="3.12"
+# Version comes from the package, so the app and the backend can't disagree.
+VERSION="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$ROOT/infogrep/__init__.py")"
+[ -n "$VERSION" ] || { echo "error: could not read __version__ from infogrep/__init__.py"; exit 1; }
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$RES"
@@ -70,7 +73,7 @@ if [ "$STANDALONE" = 1 ]; then
       --output "$RES/jre"
 fi
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -81,7 +84,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>InfoGrep</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.0.3</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
