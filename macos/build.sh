@@ -79,6 +79,12 @@ if [ "$STANDALONE" = 1 ]; then
       --add-modules java.se,jdk.unsupported,jdk.incubator.vector,jdk.zipfs,jdk.crypto.ec \
       --strip-debug --no-header-files --no-man-pages --compress=zip-6 \
       --output "$RES/jre"
+
+  # jlink writes its legal/ files read-only (444). `xattr -dr com.apple.quarantine` —
+  # the one command a user runs after downloading — then fails on them with EACCES and
+  # exits non-zero, which looks like the de-quarantine didn't work. Nothing here needs
+  # to stay read-only, so make the tree user-writable before signing.
+  chmod -R u+w "$RES/jre"
 fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
