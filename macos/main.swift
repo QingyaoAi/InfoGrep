@@ -105,10 +105,48 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     func updatePlaceholder() { field?.placeholderString = "Search \(currentFolderName())…" }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        setupMainMenu()
         setupStatusItem()
         setupPanel()
         registerHotKey()
         ensureBackend()
+    }
+
+    // MARK: main menu
+    // An agent app shows no menu bar, but AppKit still routes ⌘-key equivalents through
+    // the main menu — and cut/copy/paste/undo reach a text field *only* that way (a field
+    // editor has no performKeyEquivalent: of its own). Without this menu, ⌘V in the search
+    // field silently does nothing. Never drawn; it exists purely for the shortcuts.
+    func setupMainMenu() {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(title: "Quit InfoGrep",
+                                   action: #selector(NSApplication.terminate(_:)),
+                                   keyEquivalent: "q"))
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        // undo:/redo: aren't exposed on NSResponder in Swift, hence the string selectors.
+        let entries: [(String, Selector, String)] = [
+            ("Undo", Selector(("undo:")), "z"),
+            ("Redo", Selector(("redo:")), "Z"),
+            ("Cut", #selector(NSText.cut(_:)), "x"),
+            ("Copy", #selector(NSText.copy(_:)), "c"),
+            ("Paste", #selector(NSText.paste(_:)), "v"),
+            ("Select All", #selector(NSText.selectAll(_:)), "a"),
+        ]
+        for (title, action, key) in entries {
+            // target stays nil so each action travels the responder chain to the field editor.
+            editMenu.addItem(NSMenuItem(title: title, action: action, keyEquivalent: key))
+        }
+        editItem.submenu = editMenu
+        main.addItem(editItem)
+
+        NSApp.mainMenu = main
     }
 
     func applicationWillTerminate(_ note: Notification) {
