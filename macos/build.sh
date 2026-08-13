@@ -57,6 +57,14 @@ if [ "$STANDALONE" = 1 ]; then
   uv pip install --quiet --python "$RES/python/bin/python3" \
       --target "$RES/backend" "$ROOT"/dist/infogrep-*.whl
 
+  # Precompile the backend *before* signing. Writing .pyc into a signed bundle breaks
+  # its seal, so an app that was validly signed at download would turn "damaged" on
+  # first launch. Sealing the bytecode here (plus PYTHONDONTWRITEBYTECODE at runtime,
+  # see main.swift) means the bundle is never mutated. A stdlib copy of some vendored
+  # module may legitimately fail to compile, so don't treat that as fatal.
+  "$RES/python/bin/python3" -m compileall -q -j 0 "$RES/backend" >/dev/null 2>&1 \
+      || echo "  (note: some backend modules did not precompile)"
+
   # 3) Trimmed Java runtime for the sparse (Lucene/BM25) backend.
   echo "bundling a Java runtime (jlink)…"
   JDK="${JAVA_HOME_21:-${JAVA_HOME:-}}"
@@ -94,11 +102,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # Ad-hoc sign so macOS will run it (--deep also signs the bundled python/jre binaries).
+# Failures are fatal and the result is verified: a bundle that ships with a broken seal
+# is rejected as "damaged" on other Macs, which is invisible if signing errors are
+# swallowed. Nothing may touch the bundle after this point.
+echo "signing…"
 if [ "$STANDALONE" = 1 ]; then
-  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  codesign --force --deep --sign - "$APP"
+  codesign --verify --deep --strict "$APP"
   du -sh "$APP" | awk '{print "bundle size: " $1}'
 else
-  codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+  codesign --force --sign - "$APP"
+  codesign --verify --strict "$APP"
 fi
 
 echo "built $(pwd)/$APP"

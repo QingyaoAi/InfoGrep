@@ -52,7 +52,10 @@ def _agent_env() -> dict[str, str]:
     }
     # The standalone app bundle runs the backend with PYTHONPATH/JAVA_HOME pointing
     # into the .app; the agent re-runs the same interpreter, so it needs them too.
-    for key in ("PYTHONPATH", "PYTHONNOUSERSITE", "JAVA_HOME", "INFOGREP_HOME"):
+    # PYTHONDONTWRITEBYTECODE matters as much as the rest: a nightly reindex that wrote
+    # .pyc into the signed bundle would invalidate its signature.
+    for key in ("PYTHONPATH", "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE",
+                "JAVA_HOME", "INFOGREP_HOME"):
         if os.environ.get(key):
             env[key] = os.environ[key]
     return env

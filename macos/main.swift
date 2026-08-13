@@ -188,6 +188,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         var env = ProcessInfo.processInfo.environment
         env["PYTHONPATH"] = res + "/backend"
         env["PYTHONNOUSERSITE"] = "1"
+        // Never write .pyc into the bundle: that would invalidate its code signature and
+        // macOS would refuse the app as "damaged" on the next launch. build.sh precompiles
+        // the backend before signing, so the sealed bytecode is already there.
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         if FileManager.default.isExecutableFile(atPath: res + "/jre/bin/java") {
             env["JAVA_HOME"] = res + "/jre"
         }
