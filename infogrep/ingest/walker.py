@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from pathspec import PathSpec
 
-from ..config import Config, SIDECAR_DIRNAME
+from ..config import SIDECAR_DIRNAME, Config
 
 
 def _spec(patterns: list[str]) -> PathSpec:
-    return PathSpec.from_lines("gitignore", patterns)
+    """Compile patterns for case-insensitive matching (they are lowercased here).
+
+    Candidate paths are lowercased to match, so a config listing ``**/*.png`` also picks
+    up ``PHOTO.PNG``. Someone who writes an extension in lower case means the extension,
+    not one spelling of it — and on macOS and Windows the filesystem itself does not
+    distinguish them. Extraction already agrees: the registry keys off ``suffix.lower()``.
+    """
+    return PathSpec.from_lines("gitignore", [p.lower() for p in patterns])
 
 
 def walk(config: Config) -> Iterator[tuple[Path, str]]:
@@ -35,7 +42,7 @@ def walk(config: Config) -> Iterator[tuple[Path, str]]:
         for d in dirnames:
             if d in always_pruned:
                 continue
-            rel_d = (Path(dirpath) / d).relative_to(root).as_posix()
+            rel_d = (Path(dirpath) / d).relative_to(root).as_posix().lower()
             if exclude.match_file(rel_d) or exclude.match_file(rel_d + "/"):
                 continue
             kept.append(d)
@@ -43,5 +50,6 @@ def walk(config: Config) -> Iterator[tuple[Path, str]]:
         for name in filenames:
             abs_path = Path(dirpath) / name
             rel = abs_path.relative_to(root).as_posix()
-            if include.match_file(rel) and not exclude.match_file(rel):
+            key = rel.lower()  # patterns are lowercased in _spec; match case-insensitively
+            if include.match_file(key) and not exclude.match_file(key):
                 yield abs_path, rel
