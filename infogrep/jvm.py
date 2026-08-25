@@ -40,7 +40,7 @@ def _candidates() -> list[Path]:
     try:
         prefix = subprocess.run(
             ["brew", "--prefix", f"openjdk@{MIN_JDK}"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, check=False,
         ).stdout.strip()
         if prefix:
             paths.append(Path(prefix) / "libexec" / "openjdk.jdk" / "Contents" / "Home")  # macOS
@@ -52,7 +52,7 @@ def _candidates() -> list[Path]:
     try:
         jh = subprocess.run(
             ["/usr/libexec/java_home", "-v", str(MIN_JDK)],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, check=False,
         ).stdout.strip()
         if jh:
             paths.append(Path(jh))
@@ -71,7 +71,7 @@ def _candidates() -> list[Path]:
     try:
         alt = subprocess.run(
             ["update-alternatives", "--list", "java"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, check=False,
         ).stdout.strip()
         for line in alt.splitlines():
             if line:

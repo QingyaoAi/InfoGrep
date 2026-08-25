@@ -13,7 +13,7 @@ import hashlib
 import os
 import re
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 if sys.version_info >= (3, 11):
@@ -207,7 +207,7 @@ class Config:
         return self.index_dir / "graph.json"
 
     @classmethod
-    def load(cls, target_dir: str | Path) -> "Config":
+    def load(cls, target_dir: str | Path) -> Config:
         """Load config for ``target_dir`` (global config.toml, then per-index override)."""
         target = Path(target_dir).expanduser().resolve()
         cfg = cls(target_dir=target)
@@ -218,7 +218,7 @@ class Config:
         return cfg
 
     @staticmethod
-    def _merge(base: "Config", data: dict) -> "Config":
+    def _merge(base: Config, data: dict) -> Config:
         """Shallow-merge a parsed TOML dict onto a default Config."""
         for key in ("include", "exclude"):
             if key in data:

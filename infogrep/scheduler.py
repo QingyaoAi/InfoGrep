@@ -87,7 +87,7 @@ def install(directory: Path, hour: int = 3, minute: int = 0) -> Path:
         plistlib.dump(plist, fh)
 
     # Reload: unload any prior version, then load the new one (ignore unload errors).
-    subprocess.run(["launchctl", "unload", str(path)], capture_output=True)
+    subprocess.run(["launchctl", "unload", str(path)], capture_output=True, check=False)
     subprocess.run(["launchctl", "load", str(path)], capture_output=True, check=True)
     return path
 
@@ -103,7 +103,7 @@ def uninstall(directory: Path) -> bool:
     path = _plist_path(directory)
     if not path.exists():
         return False
-    subprocess.run(["launchctl", "unload", str(path)], capture_output=True)
+    subprocess.run(["launchctl", "unload", str(path)], capture_output=True, check=False)
     path.unlink()
     return True
 

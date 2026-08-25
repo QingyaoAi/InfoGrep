@@ -632,7 +632,7 @@ def _make_handler(directory: Path):
 
     class Handler(BaseHTTPRequestHandler):
         # Quiet by default (no per-request stderr logging).
-        def log_message(self, *args):  # noqa: D401
+        def log_message(self, *args):
             pass
 
         def _send(self, code: int, body: bytes, ctype: str):

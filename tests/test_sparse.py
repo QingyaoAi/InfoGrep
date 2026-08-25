@@ -176,9 +176,9 @@ def test_incremental_shrink_removes_extra_passages(tmp_path):
 
 @pytestmark_integration
 def test_sparse_incremental_via_indexer(tmp_path, monkeypatch):
+    import infogrep.retrieval.sparse as sparse_mod
     from infogrep.config import Config
     from infogrep.indexer import Indexer
-    import infogrep.retrieval.sparse as sparse_mod
 
     (tmp_path / "a.txt").write_text("alpha appletoken legal court")
     (tmp_path / "b.txt").write_text("beta bananatoken statute")

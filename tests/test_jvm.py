@@ -1,6 +1,6 @@
 """JDK discovery: exercise the candidate list on both macOS and Linux layouts."""
 
-import infogrep.jvm as jvm
+from infogrep import jvm
 
 
 def _no_subprocess(monkeypatch):
@@ -46,7 +46,7 @@ def test_candidates_include_which_java(monkeypatch, tmp_path):
 
 def test_ensure_jdk_error_mentions_platform_install_hint(monkeypatch):
     jvm.ensure_jdk.cache_clear()
-    monkeypatch.setattr(jvm, "_candidates", lambda: [])
+    monkeypatch.setattr(jvm, "_candidates", list)
     monkeypatch.setattr(jvm.sys, "platform", "linux")
     try:
         jvm.ensure_jdk()

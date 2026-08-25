@@ -177,4 +177,4 @@ def main(directory: str | None = None) -> None:
 
 
 # Expose retriever names for clients that introspect.
-__all__ = ["mcp", "main", "ALL_RETRIEVERS"]
+__all__ = ["ALL_RETRIEVERS", "main", "mcp"]

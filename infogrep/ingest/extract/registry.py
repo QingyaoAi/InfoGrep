@@ -11,8 +11,8 @@ indexer still records them so they remain searchable by file name / path.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from ..types import ExtractedPage
 
@@ -113,7 +113,7 @@ def _extract_doc(path: Path, **_opts) -> list[ExtractedPage]:
     try:
         proc = subprocess.run(
             ["textutil", "-convert", "txt", "-stdout", str(path)],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=60, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return []

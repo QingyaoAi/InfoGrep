@@ -65,12 +65,12 @@ class SentenceTransformerEmbedder:
         return int(self._dim)
 
     def _encode(self, texts: list[str], is_query: bool, batch_size: int) -> np.ndarray:
-        kwargs = dict(
-            batch_size=batch_size,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        )
+        kwargs = {
+            "batch_size": batch_size,
+            "normalize_embeddings": True,
+            "convert_to_numpy": True,
+            "show_progress_bar": False,
+        }
         # Use the model's query prompt if it advertises one (Qwen3 does).
         if is_query:
             prompts = getattr(self.model, "prompts", None) or {}

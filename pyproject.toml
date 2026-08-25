@@ -42,7 +42,9 @@ dense = [
 ]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.5",
+    # Pinned to a minor series: ruff widens its default rule set between minors, so an
+    # unpinned CI would lint against different rules than the local run.
+    "ruff>=0.16.4,<0.17",
 ]
 
 [project.urls]
@@ -66,6 +68,30 @@ packages = ["infogrep"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+# Ruff's default rule set widens between releases, so CI — which installs the newest
+# ruff — drifts away from the pinned local one and goes red on code nobody touched.
+# The version is pinned (dev dependency and CI action) so both run the same rules; these
+# are the ones this codebase deliberately does not follow.
+[tool.ruff.lint]
+ignore = [
+    # Typer's whole API is `arg: T = typer.Option(...)` in the signature — the call in
+    # the default is the framework's contract, not an accident. Fixing this would mean
+    # rewriting every CLI command and losing the generated --help.
+    "B008",
+    # Deliberate. Indexing catches broadly on purpose: a failing extractor, a JVM/Lucene
+    # problem, or an embedding backend must never take down a run or lose the manifest —
+    # the error is recorded in the report and the index survives. Narrowing these to
+    # specific exception types would trade that guarantee for a lint score.
+    "BLE001",
+    # Best-effort cleanup and probe paths where the failure genuinely is the answer
+    # (feature unavailable, optional dependency missing) and there is nothing to log.
+    "S110", "S112",
+    # Would rewrite the curated stopword/label word lists — grouped over several lines,
+    # with CJK terms alongside their English counterparts — into single 700-character
+    # list literals. The `"...".split()` form is what makes them reviewable.
+    "SIM905",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

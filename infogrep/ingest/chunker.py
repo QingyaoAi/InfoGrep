@@ -53,9 +53,7 @@ def _is_mostly_textual(text: str) -> bool:
     spaces = sum(1 for ch in text if ch.isspace())
     # Long non-CJK text with essentially no whitespace is almost always binary garbage.
     # (Short text — a title, a single word — legitimately has no spaces, so exempt it.)
-    if n >= 200 and cjk / n < 0.2 and spaces / n < 0.03:
-        return False
-    return True
+    return not (n >= 200 and cjk / n < 0.2 and spaces / n < 0.03)
 
 
 def chunk_pages(doc_id: str, pages: list[ExtractedPage], config: ChunkConfig) -> list[Passage]:

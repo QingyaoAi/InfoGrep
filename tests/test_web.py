@@ -77,7 +77,7 @@ def test_status_api(tmp_path):
 
 
 def test_open_api_reveals_and_validates_path(tmp_path, monkeypatch):
-    import infogrep.web as web
+    from infogrep import web
 
     revealed = []
     monkeypatch.setattr(web, "_reveal_in_file_manager", lambda p: revealed.append(p))
@@ -230,7 +230,7 @@ def test_schedule_toggle_api(tmp_path, monkeypatch):
         out = json.loads(body)
         assert out["ok"] is True and out["scheduled"] is True
         _, body = _get(port, "/api/indexes")
-        entry = [i for i in json.loads(body)["indexes"] if i["dir"] == str(target)][0]
+        entry = next(i for i in json.loads(body)["indexes"] if i["dir"] == str(target))
         assert entry["scheduled"] is True
         # Turn it off again -> agent removed.
         _, body = _post(port, f"/api/schedule?dir={q}&on=0")

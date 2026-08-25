@@ -20,3 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/ruff-action@v3
+        with:
+          # Match the pyproject dev pin: the action installs the newest ruff by
+          # default, whose wider default rules would red the build on untouched code.
+          version: ">=0.16.4,<0.17"

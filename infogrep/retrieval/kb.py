@@ -65,7 +65,7 @@ class KnowledgeBaseIndex:
         # A None value is a bare flag (e.g. ``overwrite``), not a key=value pair.
         args += [k if v is None else f"{k}={v}" for k, v in params.items()]
         try:
-            proc = subprocess.run(args, capture_output=True, text=True, timeout=30)
+            proc = subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
         except FileNotFoundError as exc:
             raise ObsidianCliError(
                 f"Obsidian CLI not found ('{self.cli}'). Install it or set kb.cli."

@@ -78,7 +78,7 @@ def test_en_zh_builds_in_cold_process(tmp_path):
         assert e.search_sparse("信息检索", 3)      # Chinese (bigrams)
         print("COLD_OK")
     """)
-    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
     assert "COLD_OK" in r.stdout, (r.stdout + r.stderr)[-2000:]
 
 

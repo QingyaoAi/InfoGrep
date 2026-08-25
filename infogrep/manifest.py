@@ -104,7 +104,7 @@ class Manifest:
     def close(self) -> None:
         self._conn.close()
 
-    def __enter__(self) -> "Manifest":
+    def __enter__(self) -> Manifest:  # noqa: PYI034 - typing.Self needs 3.11, we support 3.10
         return self
 
     def __exit__(self, *exc) -> None:

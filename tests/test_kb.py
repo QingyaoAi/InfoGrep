@@ -127,7 +127,7 @@ def _obsidian_live() -> bool:
         return False
     try:
         out = subprocess.run(
-            ["obsidian", "vault"], capture_output=True, text=True, timeout=15
+            ["obsidian", "vault"], capture_output=True, text=True, timeout=15, check=False
         ).stdout.lower()
         return "error" not in out and bool(out.strip())
     except Exception:

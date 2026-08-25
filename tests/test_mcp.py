@@ -42,7 +42,7 @@ def test_search_dense_tool_returns_dicts(tmp_path):
     hits = out["results"]
     assert hits and hits[0]["path"] == "berry.txt"
     assert hits[0]["retriever"] == "dense"
-    assert set(["path", "snippet", "score", "page", "retriever"]).issubset(hits[0])
+    assert {"path", "snippet", "score", "page", "retriever"}.issubset(hits[0])
 
 
 def test_index_status_tool(tmp_path):

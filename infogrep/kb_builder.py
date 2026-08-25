@@ -19,6 +19,7 @@ and local, in keeping with the rest of InfoGrep.
 
 from __future__ import annotations
 
+import itertools
 import re
 import time
 from collections import Counter, defaultdict
@@ -122,7 +123,7 @@ def _looks_like_identifier(word: str) -> bool:
         return True
     if re.search(r"\d{4}", word):
         return True
-    return sum(1 for a, b in zip(word, word[1:]) if a.islower() and b.isupper()) >= 2
+    return sum(1 for a, b in itertools.pairwise(word) if a.islower() and b.isupper()) >= 2
 
 
 def extract_entities(
@@ -270,8 +271,10 @@ class KnowledgeGraphBuilder:
             "",
             f"# {title}",
             "",
-            f"Auto-built by `infogrep learn` from files indexed under "
-            f"`{self.config.target_dir}`. Rebuilding overwrites this note.",
+            (
+                "Auto-built by `infogrep learn` from files indexed under "
+                f"`{self.config.target_dir}`. Rebuilding overwrites this note."
+            ),
             "",
         ]
         if entities:

@@ -140,7 +140,7 @@ def _suppress_jvm_startup_stderr():
 
 ensure_jdk()
 
-import jnius_config  # noqa: E402
+import jnius_config
 
 if not jnius_config.vm_running:
     jnius_config.add_classpath(str(jar_path()))
@@ -154,6 +154,6 @@ if not jnius_config.vm_running:
         jnius_config.add_options("-Dslf4j.internal.verbosity=WARN")
 
 with _suppress_jvm_startup_stderr():
-    from jnius import autoclass, cast  # noqa: E402
+    from jnius import autoclass, cast
 
-__all__ = ["autoclass", "cast", "available", "jar_path", "ANSERINI_VERSION"]
+__all__ = ["ANSERINI_VERSION", "autoclass", "available", "cast", "jar_path"]

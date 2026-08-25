@@ -21,21 +21,19 @@ def test_config_toml_overrides_defaults(tmp_path: Path):
     cfg0 = Config.load(tmp_path)
     cfg0.index_dir.mkdir(parents=True, exist_ok=True)
     (cfg0.index_dir / "config.toml").write_text(
-        "\n".join(
-            [
-                "exclude = ['secret/**']",
-                "[chunk]",
-                "size = 256",
-                "[dense]",
-                "embedder = 'harrier'",
-                "[kb]",
-                "enabled = true",
-                "vault = 'My Vault'",
-                "[graph]",
-                "enabled = false",
-                "hops = 2",
-            ]
-        )
+        """
+        exclude = ['secret/**']
+        [chunk]
+        size = 256
+        [dense]
+        embedder = 'harrier'
+        [kb]
+        enabled = true
+        vault = 'My Vault'
+        [graph]
+        enabled = false
+        hops = 2
+        """
     )
     cfg = Config.load(tmp_path)
     assert cfg.exclude == ["secret/**"]

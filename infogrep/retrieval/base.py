@@ -53,7 +53,7 @@ class Result:
         }
 
 
-def with_file_metadata(result: "Result", root: os.PathLike | str | None) -> "Result":
+def with_file_metadata(result: Result, root: os.PathLike | str | None) -> Result:
     """Return a copy of ``result`` enriched with the original file path + metadata.
 
     ``root`` is the filesystem root the result's ``path`` is relative to (the indexed
