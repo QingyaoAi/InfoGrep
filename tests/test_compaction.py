@@ -10,18 +10,21 @@ import pytest
 from infogrep.config import Config
 from infogrep.indexer import Indexer
 from infogrep.manifest import Manifest
+from infogrep.retrieval.sparse import SparseIndex
 
-try:
-    from infogrep.retrieval.sparse import SparseIndex  # noqa: F401
 
-    from infogrep.anserini import autoclass
+def _sparse_available() -> bool:
+    try:
+        from infogrep import anserini
 
-    autoclass("org.apache.lucene.index.IndexWriter")
-    _SPARSE_OK = True
-except Exception:  # pragma: no cover - depends on a local JDK/Anserini jar
-    _SPARSE_OK = False
+        return anserini.available()
+    except Exception:
+        return False
 
-needs_sparse = pytest.mark.skipif(not _SPARSE_OK, reason="Anserini jar/JDK21 not available")
+
+needs_sparse = pytest.mark.skipif(
+    not _sparse_available(), reason="Anserini jar/JDK21 not available"
+)
 
 
 def _cfg(tmp_path, sparse=False):
