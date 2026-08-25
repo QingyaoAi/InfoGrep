@@ -97,6 +97,26 @@ class KnowledgeBaseConfig:
     cli: str = "obsidian"  # path to the Obsidian CLI binary
     hops: int = 1  # graph link hops to expand (follows links + backlinks)
     search_limit: int = 10  # how many search hits to seed graph expansion from
+    # Vault folder that agent-written notes (``infogrep learn``) go into. All
+    # InfoGrep writes stay inside this folder; the rest of the vault is read-only.
+    agent_folder: str = "Agent Knowledge"
+
+
+@dataclass
+class CompactConfig:
+    """Reclaiming the space that deleted files leave behind.
+
+    Deletions take effect immediately — a removed file stops appearing in results on the
+    next reindex — but the space it occupied is only tombstoned: Lucene marks documents
+    deleted without rewriting the segment, and SQLite parks freed pages on a freelist
+    instead of returning them to the OS. Left alone, a directory with churn grows
+    monotonically. Compaction rewrites both once the dead fraction crosses ``threshold``,
+    and only after a reindex that actually deleted something (it is proportionally
+    expensive, so it must not run on every pass).
+    """
+
+    enabled: bool = True
+    threshold: float = 0.2  # dead fraction (tombstones / free pages) that triggers a rewrite
 
 
 @dataclass
@@ -153,6 +173,7 @@ class Config:
     dense: DenseConfig = field(default_factory=DenseConfig)
     kb: KnowledgeBaseConfig = field(default_factory=KnowledgeBaseConfig)
     graph: GraphConfig = field(default_factory=GraphConfig)
+    compact: CompactConfig = field(default_factory=CompactConfig)
 
     @property
     def index_dir(self) -> Path:
@@ -214,4 +235,6 @@ class Config:
             base.kb = KnowledgeBaseConfig(**{**asdict(base.kb), **data["kb"]})
         if "graph" in data:
             base.graph = GraphConfig(**{**asdict(base.graph), **data["graph"]})
+        if "compact" in data:
+            base.compact = CompactConfig(**{**asdict(base.compact), **data["compact"]})
         return base

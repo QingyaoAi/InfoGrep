@@ -164,6 +164,48 @@ class SparseIndex:
         """
         return self._write(added_passages, removed_ids=removed_ids, create=False)
 
+    def deleted_ratio(self) -> float:
+        """Fraction of the index that is tombstoned (deleted but not yet reclaimed).
+
+        ``update`` deletes documents by marking them, so their postings keep occupying
+        disk until a merge rewrites the segment. Returns 0.0 when there is no index.
+        """
+        from ..anserini import autoclass
+
+        if not any(self.index_dir.glob("segments*")):
+            return 0.0
+        FSDirectory = autoclass("org.apache.lucene.store.FSDirectory")
+        Paths = autoclass("java.nio.file.Paths")
+        DirectoryReader = autoclass("org.apache.lucene.index.DirectoryReader")
+        reader = DirectoryReader.open(FSDirectory.open(Paths.get(str(self.index_dir))))
+        try:
+            max_doc = reader.maxDoc()
+            return reader.numDeletedDocs() / max_doc if max_doc else 0.0
+        finally:
+            reader.close()
+
+    def compact(self) -> None:
+        """Rewrite segments so tombstoned documents actually release their disk space."""
+        from ..anserini import autoclass
+
+        if not any(self.index_dir.glob("segments*")):
+            return
+        FSDirectory = autoclass("org.apache.lucene.store.FSDirectory")
+        Paths = autoclass("java.nio.file.Paths")
+        IndexWriter = autoclass("org.apache.lucene.index.IndexWriter")
+        IndexWriterConfig = autoclass("org.apache.lucene.index.IndexWriterConfig")
+        OpenMode = autoclass("org.apache.lucene.index.IndexWriterConfig$OpenMode")
+
+        config = IndexWriterConfig(make_analyzer(self.built_language()))
+        config.setOpenMode(OpenMode.CREATE_OR_APPEND)
+        writer = IndexWriter(FSDirectory.open(Paths.get(str(self.index_dir))), config)
+        try:
+            writer.forceMergeDeletes(True)  # blocking: only merges segments with deletes
+            writer.commit()
+        finally:
+            writer.close()
+        self._searcher = None  # force reopen against the rewritten segments
+
     def _write(self, passages: Iterable, removed_ids, create: bool) -> int:
         # infogrep.anserini configures the Anserini classpath and boots the JVM at
         # import time (otherwise classes like CustomAnalyzer, used by the en+zh

@@ -41,6 +41,26 @@ class Manifest:
         """Fold the WAL back into the main DB and truncate it (keeps the WAL bounded)."""
         self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
+    def free_ratio(self) -> float:
+        """Fraction of the DB file sitting on the freelist (reclaimable by ``vacuum``).
+
+        Deleting a file's rows frees their pages, but SQLite keeps them for reuse rather
+        than shrinking the file, so a directory that loses many files leaves a manifest
+        that is mostly empty space.
+        """
+        pages = self._conn.execute("PRAGMA page_count").fetchone()[0]
+        free = self._conn.execute("PRAGMA freelist_count").fetchone()[0]
+        return free / pages if pages else 0.0
+
+    def vacuum(self) -> None:
+        """Rewrite the DB without its free pages, returning the space to the OS.
+
+        Needs no open transaction and briefly requires room for a second copy of the
+        live data, so callers should commit first and treat failure as non-fatal.
+        """
+        self._conn.commit()
+        self._conn.execute("VACUUM")
+
     # -- lifecycle ---------------------------------------------------------
 
     def _init_schema(self) -> None:

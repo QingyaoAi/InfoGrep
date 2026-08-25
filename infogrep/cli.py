@@ -62,6 +62,14 @@ def index(
         f"unchanged={report.unchanged} name_only={report.name_only}"
     )
     typer.echo(f"[infogrep] index now holds {report.n_files} files, {report.n_passages} passages")
+    compacted = [
+        name
+        for name, done in (("sparse", report.compacted_sparse),
+                           ("manifest", report.compacted_manifest))
+        if done
+    ]
+    if compacted:
+        typer.echo(f"[infogrep] reclaimed space from deleted files ({', '.join(compacted)})")
     for err in report.errors:
         typer.echo(f"[infogrep] error: {err}", err=True)
 

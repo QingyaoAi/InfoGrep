@@ -74,6 +74,8 @@ class IndexReport:
     name_only: int = 0  # indexed by file name/path only (no extractable content)
     n_files: int = 0
     n_passages: int = 0
+    compacted_sparse: bool = False  # segments rewritten to release deleted docs
+    compacted_manifest: bool = False  # manifest VACUUMed to release freed pages
     errors: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -200,6 +202,7 @@ class Indexer:
 
             self._build_graph(manifest, report, full)
             self._build_backends(manifest, report, full, removed_ids, changed_paths)
+            self._compact(manifest, report)
 
         self._hash_cache.clear()
         return report
@@ -228,9 +231,10 @@ class Indexer:
         cfg = self.config
         added = modified = 0
         seen: set[str] = set()
+        # Mirror reindex()'s walk exactly: every walked file counts as seen, including
+        # ones with no content extractor (reindex still indexes those by name/path, so
+        # filtering them here would report them as deletions that never go away).
         for abs_path, rel in walk(cfg):
-            if not is_supported(abs_path):
-                continue
             seen.add(rel)
             try:
                 stat = abs_path.stat()
@@ -303,6 +307,44 @@ class Indexer:
             build_graph(cfg.index_dir, manifest.all_paths())
         except Exception as exc:  # never let a graph-build issue lose the manifest
             report.errors.append(f"graph: {exc}")
+
+    def _compact(self, manifest: Manifest, report: IndexReport) -> None:
+        """Reclaim the disk space of deleted files once enough of it has accumulated.
+
+        Removing a file takes effect immediately, but both backends only tombstone the
+        space: Lucene leaves deleted documents in their segment, and SQLite keeps freed
+        pages on a freelist. Rewriting either costs time proportional to the whole index,
+        so it happens only once the dead fraction crosses ``compact.threshold``.
+
+        The trigger is that measured fraction rather than this run's deletion count:
+        waste is a property of the index, so an index that churned in the past and has
+        since gone quiet still gets reclaimed. Both measurements are O(1) (two SQLite
+        pragmas, one Lucene reader open); only the rewrite itself is expensive.
+        """
+        cfg = self.config
+        if not cfg.compact.enabled:
+            return
+
+        if cfg.sparse.enabled:
+            from .retrieval.sparse import SparseIndex
+
+            try:
+                sparse = SparseIndex(
+                    cfg.sparse_dir, cfg.cache_dir,
+                    field_boosts=cfg.sparse.field_boosts, language=cfg.sparse.language,
+                )
+                if sparse.deleted_ratio() >= cfg.compact.threshold:
+                    sparse.compact()
+                    report.compacted_sparse = True
+            except Exception as exc:  # reclaiming space must never lose the index
+                report.errors.append(f"sparse compact: {exc}")
+
+        try:
+            if manifest.free_ratio() >= cfg.compact.threshold:
+                manifest.vacuum()
+                report.compacted_manifest = True
+        except Exception as exc:
+            report.errors.append(f"manifest vacuum: {exc}")
 
     def _build_backends(
         self,
