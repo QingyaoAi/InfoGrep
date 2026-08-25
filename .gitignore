@@ -32,6 +32,9 @@ models/
 # Built macOS launcher app
 macos/InfoGrep.app/
 macos/InfoGrep.app.zip
+macos/InfoGrep.dmg
+macos/dmg/
+macos/verify/
 
 # Raw source artwork (processed into docs/assets/ and macos/assets/AppIcon.icns)
 image/

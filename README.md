@@ -171,10 +171,11 @@ Folder…**) or the web UI (**＋ folder**). Additionally requires Xcode Command
 → **Open** (one time).
 
 Don't want to install anything? Every [GitHub release](https://github.com/QingyaoAi/InfoGrep/releases)
-ships a prebuilt **standalone** `InfoGrep.app.zip` (Apple Silicon) that bundles the whole
-backend — Python runtime, InfoGrep, and a Java runtime — and starts its own local server.
-Unzip, drag to `/Applications`, then right-click → **Open** on first launch (it's ad-hoc
-signed; or `xattr -dr com.apple.quarantine /Applications/InfoGrep.app`). Press **⌘⇧Space**
+ships a prebuilt **standalone** app (Apple Silicon) that bundles the whole backend —
+Python runtime, InfoGrep, and a Java runtime — and starts its own local server. Grab
+`InfoGrep.dmg` and drag InfoGrep to `/Applications` (or `InfoGrep.app.zip`, same bundle),
+then right-click → **Open** on first launch (it's ad-hoc signed, not notarized, so the DMG
+doesn't skip this; or `xattr -dr com.apple.quarantine /Applications/InfoGrep.app`). Press **⌘⇧Space**
 and index a folder from the 🔎 menu — no `uv`, Python, or JDK needed. (Dense/semantic
 search stays a pip extra — torch is too big to ship; the standalone app searches with the
 keyword + knowledge-base + folder retrievers.)

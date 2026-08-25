@@ -9,14 +9,18 @@ hotkey, type, and open the matching file.
 
 ## Download & run (standalone app)
 
-The GitHub-release `InfoGrep.app.zip` is **self-contained** (Apple Silicon): it bundles a
-Python runtime, the InfoGrep backend, and a Java runtime, and starts its own local server
-when nothing is listening on port 7421 (the server stops when the app quits). Unzip, then
-first launch needs one Gatekeeper approval because the app is not notarized:
+Each GitHub release ships `InfoGrep.dmg` (open it and drag InfoGrep to Applications) and
+`InfoGrep.app.zip` — the same bundle, take whichever you prefer. Both are **self-contained**
+(Apple Silicon): they bundle a Python runtime, the InfoGrep backend, and a Java runtime, and
+start their own local server when nothing is listening on port 7421 (the server stops when
+the app quits).
+
+First launch needs one Gatekeeper approval either way, because the app is ad-hoc signed
+rather than notarized — the DMG does not change that:
 
 ```bash
-xattr -dr com.apple.quarantine InfoGrep.app   # or right-click → Open, once
-open InfoGrep.app                              # menu-bar 🔎 appears; press ⌘⇧-Space
+xattr -dr com.apple.quarantine /Applications/InfoGrep.app   # or right-click → Open, once
+open /Applications/InfoGrep.app                             # 🔎 appears; press ⌘⇧-Space
 ```
 
 Pick **Index a Folder…** from the 🔎 menu to build your first index. (Dense/semantic

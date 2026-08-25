@@ -4,9 +4,14 @@
 # backend, and a jlink'd Java runtime, and starts its own server — download, open, done.
 # Apple Silicon only (macos-latest runners are arm64).
 #
+# Ships both a .dmg (drag-to-Applications installer) and a .app.zip, from the same
+# bundle. The DMG is the friendlier download; the zip stays so existing links keep working.
+#
 # The app is ad-hoc signed (no Apple developer account), so a downloaded copy is
-# quarantined by Gatekeeper: first launch needs right-click -> Open (one time), or
-#   xattr -dr com.apple.quarantine InfoGrep.app
+# quarantined by Gatekeeper either way: first launch needs right-click -> Open (one
+# time), or
+#   xattr -dr com.apple.quarantine /Applications/InfoGrep.app
+# A DMG does not change that — only Developer ID signing plus notarization would.
 name: macOS app
 
 on:
@@ -33,24 +38,55 @@ jobs:
       - name: Build standalone InfoGrep.app
         run: cd macos && ./build.sh --standalone
 
-      - name: Zip the app bundle
-        run: cd macos && ditto -c -k --keepParent InfoGrep.app InfoGrep.app.zip
-
       - name: Smoke-test the bundled backend
+        # Exactly the environment the launcher uses (see macos/main.swift). Without
+        # PYTHONDONTWRITEBYTECODE the interpreter writes .pyc for the bundled stdlib into
+        # the bundle, breaking its seal so macOS calls the app damaged — this step must
+        # not be the thing that does that.
         run: |
           RES="macos/InfoGrep.app/Contents/Resources"
-          PYTHONPATH="$RES/backend" PYTHONNOUSERSITE=1 \
+          PYTHONPATH="$RES/backend" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
             "$RES/python/bin/python3" -m infogrep --help >/dev/null
           test -x "$RES/jre/bin/java"
+
+      - name: Package the zip and the DMG
+        run: |
+          cd macos
+          ditto -c -k --keepParent InfoGrep.app InfoGrep.app.zip
+          # ditto (not cp -R) into the staging dir: it preserves the code signature.
+          rm -rf dmg && mkdir dmg
+          ditto InfoGrep.app dmg/InfoGrep.app
+          ln -s /Applications dmg/Applications   # drag-to-install target
+          # ULFO (LZFSE) over UDZO: ~10 MB smaller, and it needs macOS 10.11+ while the
+          # app already requires 13.0. A DMG still lands bigger than the zip (filesystem
+          # overhead) — that is the price of the drag-to-Applications window.
+          hdiutil create -volname InfoGrep -srcfolder dmg -ov -format ULFO InfoGrep.dmg
+
+      - name: Verify the signature in both artifacts
+        # A bundle whose seal broke during packaging is rejected as "damaged" on every
+        # other Mac, and that is invisible until someone downloads it. Check here instead.
+        run: |
+          cd macos
+          rm -rf verify && mkdir -p verify/zip verify/mnt
+          ditto -x -k InfoGrep.app.zip verify/zip
+          codesign --verify --deep --strict verify/zip/InfoGrep.app
+          hdiutil attach InfoGrep.dmg -nobrowse -quiet -mountpoint "$PWD/verify/mnt"
+          codesign --verify --deep --strict verify/mnt/InfoGrep.app
+          hdiutil detach "$PWD/verify/mnt" -quiet
+          rm -rf verify
 
       - name: Upload as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: InfoGrep.app
-          path: macos/InfoGrep.app.zip
+          path: |
+            macos/InfoGrep.app.zip
+            macos/InfoGrep.dmg
 
       - name: Attach to the release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" macos/InfoGrep.app.zip --clobber
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            macos/InfoGrep.dmg macos/InfoGrep.app.zip --clobber
