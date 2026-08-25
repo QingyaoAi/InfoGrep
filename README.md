@@ -207,6 +207,7 @@ targets (`sync`, `app`, `test`, `lint`, …).
 infogrep index <dir>                 # build / update the index for a directory
 infogrep search <query> -d <dir>     # query (modes: hybrid [default] | sparse | dense | kb | graph)
 infogrep search <query> --prf        # sparse query expansion (RM3)
+infogrep learn <query> -d <dir>      # distill search results into linked KB vault notes
 infogrep status <dir>                # index status + staleness (pending changes)
 infogrep mcp --dir <dir>             # run the MCP server (stdio) for coding agents
 infogrep serve --dir <dir>           # browser UI to test search (http://127.0.0.1:7421)
@@ -227,7 +228,7 @@ claude mcp add infogrep -- uv run infogrep mcp --dir /path/to/your/project
 ```
 
 Tools exposed: `search_sparse`, `search_dense`, `search_kb`, `search_graph`,
-`search_hybrid`, `index_status`, `reindex`. Each search tool returns `{"results": [...]}`
+`search_hybrid`, `kb_learn`, `index_status`, `reindex`. Each search tool returns `{"results": [...]}`
 where every result carries `path`, `page`, `snippet`, `score`, and `retriever` for easy
 citation. `search_hybrid` (recommended) fuses whichever retrievers are enabled and reports
 which were `used` vs. `skipped` (and why).
@@ -277,6 +278,26 @@ hops = 1              # link hops to expand (follows links + backlinks)
 
 If the app isn't running, `search_kb` is skipped (in hybrid) or reports a clear error
 (standalone).
+
+### Building the knowledge base from your files (`learn`)
+
+`infogrep learn <query>` (MCP: `kb_learn`) is the write side of the knowledge base: it
+searches the indexed files (sparse + dense + graph — never kb itself), mines the top
+passages for related entities (capitalized phrases and acronyms, ranked by
+cross-document frequency — model-free and local like everything else), and writes
+interlinked notes into the vault's agent folder (`kb.agent_folder`, default
+`"Agent Knowledge"` — the only vault location InfoGrep ever writes to):
+
+```
+Agent Knowledge/Topics/<query>.md      source paths + snippets + [[entity]] links
+Agent Knowledge/Entities/<entity>.md   one note per entity, linking back to its topics
+```
+
+Because the notes are joined by wikilinks, a later `search_kb` that hits any of them
+expands along links/backlinks and surfaces the whole neighborhood — topic, entities,
+and source citations — without re-searching the files. Rebuilding a topic is
+idempotent: the topic note is regenerated in place and entity notes never gain
+duplicate mentions.
 
 ### Scanned PDFs (OCR)
 
@@ -337,6 +358,7 @@ vault = ""      # Obsidian vault name; empty -> the CLI's active vault
 cli = "obsidian"
 hops = 1
 search_limit = 10
+agent_folder = "Agent Knowledge"   # vault folder `infogrep learn` writes into
 
 [graph]
 enabled = true    # folder/filename metadata graph; cheap, on by default

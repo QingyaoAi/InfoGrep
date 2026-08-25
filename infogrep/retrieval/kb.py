@@ -62,7 +62,8 @@ class KnowledgeBaseIndex:
         args = [self.cli, command]
         if self.vault:
             args.append(f"vault={self.vault}")
-        args += [f"{k}={v}" for k, v in params.items()]
+        # A None value is a bare flag (e.g. ``overwrite``), not a key=value pair.
+        args += [k if v is None else f"{k}={v}" for k, v in params.items()]
         try:
             proc = subprocess.run(args, capture_output=True, text=True, timeout=30)
         except FileNotFoundError as exc:
@@ -122,6 +123,38 @@ class KnowledgeBaseIndex:
         if out.strip().lower().startswith("error:"):
             return ""
         return _FRONTMATTER_RE.sub("", out, count=1)
+
+    # -- note writing (used by kb_builder; confined to the agent folder) -----
+
+    @staticmethod
+    def _escape_content(text: str) -> str:
+        """The CLI takes ``\\n``/``\\t`` escapes for newlines/tabs in content values."""
+        return text.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
+
+    def read_note(self, path: str) -> str | None:
+        """Raw note content (frontmatter included), or None when the note is missing."""
+        out = self._call("read", {"path": path})
+        if out.strip().lower().startswith("error:"):
+            return None
+        return out
+
+    def create_note(self, path: str, content: str, overwrite: bool = False) -> None:
+        """Create (or with ``overwrite`` replace) a note; parent folders are auto-created.
+
+        Without ``overwrite`` the CLI silently writes to ``name 1.md`` when the path
+        exists, so callers must check :meth:`read_note` first to stay idempotent.
+        """
+        params: dict[str, str | None] = {"path": path, "content": self._escape_content(content)}
+        if overwrite:
+            params["overwrite"] = None
+        out = self._call("create", params)
+        if out.strip().lower().startswith("error:"):
+            raise ObsidianCliError(f"Obsidian create failed for {path}: {out.strip()}")
+
+    def append_note(self, path: str, content: str) -> None:
+        out = self._call("append", {"path": path, "content": self._escape_content(content)})
+        if out.strip().lower().startswith("error:"):
+            raise ObsidianCliError(f"Obsidian append failed for {path}: {out.strip()}")
 
     # -- expansion + snippets ---------------------------------------------
 

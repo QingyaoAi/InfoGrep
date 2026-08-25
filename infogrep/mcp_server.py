@@ -1,7 +1,7 @@
 """MCP server exposing InfoGrep retrieval as agent tools.
 
 Tools: search_sparse, search_dense, search_kb, search_graph, search_hybrid,
-index_status, reindex.
+kb_learn, index_status, reindex.
 
 The server is bound to a default directory (the indexed project root) chosen at launch;
 every tool also accepts an optional ``directory`` to target a different indexed tree.
@@ -122,6 +122,32 @@ def search_hybrid(
         "used": out.used,
         "skipped": out.skipped,
     }
+
+
+@mcp.tool()
+def kb_learn(
+    query: str, k: int = 12, max_entities: int = 8, directory: str | None = None
+) -> dict:
+    """Distill what the indexed files say about ``query`` into the knowledge-base vault.
+
+    Searches the indexed files (sparse + dense + graph), mines the top passages for
+    related entities, and writes interlinked Obsidian notes into the vault's agent
+    folder: a topic note (source paths + snippets + entity wikilinks) plus one note
+    per entity linking back. Future ``search_kb``/``search_hybrid`` calls then answer
+    questions about the topic or its entities straight from the vault via link
+    expansion. Idempotent per topic: rebuilding refreshes the topic note without
+    duplicating entity mentions. Requires the Obsidian app + CLI.
+
+    Args:
+        query: topic to research and persist (also becomes the topic note's title).
+        k: how many passages to gather as sources.
+        max_entities: cap on related-entity notes to create/link.
+        directory: indexed directory to learn from (defaults to the server's).
+
+    Returns a build summary: topic note path, entities, notes created/updated,
+    and which retrievers contributed.
+    """
+    return _engine(directory).learn(query, k=k, max_entities=max_entities)
 
 
 @mcp.tool()

@@ -109,6 +109,43 @@ def search(
 
 
 @app.command()
+def learn(
+    query: str = typer.Argument(..., help="Topic to research and persist in the KB."),
+    directory: Path = typer.Option(Path.cwd(), "--dir", "-d", help="Indexed directory."),
+    k: int = typer.Option(12, "--k", help="Passages to gather as sources."),
+    max_entities: int = typer.Option(8, "--max-entities", help="Entity notes to link."),
+) -> None:
+    """Search indexed files for a topic and write linked notes into the KB vault."""
+    from .engine import SearchEngine
+
+    engine = SearchEngine(Config.load(directory))
+    try:
+        out = engine.learn(query, k=k, max_entities=max_entities)
+    except (FileNotFoundError, ValueError) as exc:  # missing index / Obsidian down
+        typer.echo(f"[infogrep] {exc}", err=True)
+        raise typer.Exit(code=2)
+
+    for name, reason in out["retrievers_skipped"].items():
+        typer.echo(f"[infogrep] skipped {name}: {reason}")
+    if not out["topic_note"]:
+        typer.echo("[infogrep] no results for that query — nothing written.")
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"[infogrep] gathered {out['n_passages']} passages from {out['n_sources']} files "
+        f"({', '.join(out['retrievers_used'])})"
+    )
+    typer.echo(f"[infogrep] topic note: {out['topic_note']}")
+    for label in ("created", "updated", "unchanged"):
+        for path in out[f"entity_notes_{label}"]:
+            typer.echo(f"[infogrep] entity {label}: {path}")
+    if not out["kb_search_enabled"]:
+        typer.echo(
+            "[infogrep] note: kb search is disabled — set [kb] enabled = true in this "
+            "directory's config so searches can use the knowledge base."
+        )
+
+
+@app.command()
 def status(
     directory: Path = typer.Argument(Path.cwd(), help="Indexed directory."),
 ) -> None:

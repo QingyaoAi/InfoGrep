@@ -200,6 +200,17 @@ class SearchEngine:
         out.results = reciprocal_rank_fusion(lists, top_n=k) if lists else []
         return out
 
+    # -- knowledge-base building --------------------------------------------
+
+    def learn(self, query: str, k: int = 12, max_entities: int = 8) -> dict:
+        """Distill search results for ``query`` into linked notes in the KB vault.
+
+        See :mod:`infogrep.kb_builder`; returns its build summary.
+        """
+        from .kb_builder import KnowledgeGraphBuilder
+
+        return KnowledgeGraphBuilder(self).build(query, k=k, max_entities=max_entities)
+
     # -- maintenance -------------------------------------------------------
 
     def status(self, check_staleness: bool = True) -> dict:
