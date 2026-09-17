@@ -1,3 +1,3 @@
 """InfoGrep: local-first content search for coding agents."""
 
-__version__ = "0.0.6"
+__version__ = "0.0.7"
