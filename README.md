@@ -167,15 +167,16 @@ reindexing is opt-in per folder: toggle it in the web UI or the menu-bar app, or
 `infogrep schedule install/uninstall/list`. Press **⌘⇧Space** for the
 launcher, or open <http://127.0.0.1:7421>; add folders to search from the app (**Index a
 Folder…**) or the web UI (**＋ folder**). Additionally requires Xcode Command Line Tools
-(`xcode-select --install`); the app is ad-hoc signed, so the first launch needs a right-click
-→ **Open** (one time).
+(`xcode-select --install`). An app you built yourself isn't quarantined, so it just opens.
 
 Don't want to install anything? Every [GitHub release](https://github.com/QingyaoAi/InfoGrep/releases)
 ships a prebuilt **standalone** app (Apple Silicon) that bundles the whole backend —
 Python runtime, InfoGrep, and a Java runtime — and starts its own local server. Grab
 `InfoGrep.dmg` and drag InfoGrep to `/Applications` (or `InfoGrep.app.zip`, same bundle),
-then right-click → **Open** on first launch (it's ad-hoc signed, not notarized, so the DMG
-doesn't skip this; or `xattr -dr com.apple.quarantine /Applications/InfoGrep.app`). Press **⌘⇧Space**
+then clear the download flag on first launch — `xattr -dr com.apple.quarantine
+/Applications/InfoGrep.app`, or open it, let macOS refuse, and click **Open Anyway** in
+System Settings → Privacy & Security. (It's ad-hoc signed, not notarized, so the DMG
+doesn't skip this, and macOS 15 dropped the old Control-click → **Open** shortcut.) Press **⌘⇧Space**
 and index a folder from the 🔎 menu — no `uv`, Python, or JDK needed. (Dense/semantic
 search stays a pip extra — torch is too big to ship; the standalone app searches with the
 keyword + knowledge-base + folder retrievers.)

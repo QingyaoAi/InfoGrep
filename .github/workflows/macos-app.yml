@@ -8,10 +8,15 @@
 # bundle. The DMG is the friendlier download; the zip stays so existing links keep working.
 #
 # The app is ad-hoc signed (no Apple developer account), so a downloaded copy is
-# quarantined by Gatekeeper either way: first launch needs right-click -> Open (one
-# time), or
+# quarantined by Gatekeeper either way. First launch needs
 #   xattr -dr com.apple.quarantine /Applications/InfoGrep.app
+# or System Settings -> Privacy & Security -> Open Anyway. (macOS 15 removed the old
+# right-click -> Open shortcut for non-notarized apps, so that no longer works.)
 # A DMG does not change that — only Developer ID signing plus notarization would.
+#
+# build.sh pins the Swift deployment target to its MACOS_MIN rather than letting swiftc
+# default to the runner's OS, so bumping macos-latest cannot quietly raise the minimum
+# macOS of a release. It verifies the stamped floor and fails the build on a mismatch.
 name: macOS app
 
 on:

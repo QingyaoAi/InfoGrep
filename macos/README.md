@@ -19,9 +19,14 @@ First launch needs one Gatekeeper approval either way, because the app is ad-hoc
 rather than notarized — the DMG does not change that:
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/InfoGrep.app   # or right-click → Open, once
+xattr -dr com.apple.quarantine /Applications/InfoGrep.app   # clears the download flag
 open /Applications/InfoGrep.app                             # 🔎 appears; press ⌘⇧-Space
 ```
+
+Without a terminal: open it once, let macOS refuse, then **System Settings → Privacy &
+Security → Open Anyway**. (Control-click → Open used to do this in one step; macOS 15
+removed that shortcut for apps that aren't notarized, so on macOS 15 and later it just
+shows the same refusal.)
 
 Pick **Index a Folder…** from the 🔎 menu to build your first index. (Dense/semantic
 search isn't in the bundle — it needs torch; use the pip install for that. The Anserini
