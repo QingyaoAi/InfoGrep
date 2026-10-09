@@ -4,7 +4,7 @@ import pytest
 
 from infogrep.config import Config
 from infogrep.indexer import Indexer
-from infogrep.retrieval.sparse import SparseIndex, _row_to_json
+from infogrep.retrieval.sparse import SparseIndex, _row_to_json, search_pooled
 
 
 def test_row_to_json_shape():
@@ -247,3 +247,56 @@ def test_search_reflects_incremental_delete(tmp_path):
     Indexer(cfg).reindex()
     # Fresh searcher against the rebuilt index: the deleted doc is gone.
     assert SparseIndex(cfg.sparse_dir, cfg.cache_dir).search("unique-token-zebra", k=5) == []
+
+
+def _two_indexes(tmp_path):
+    """A big index where "zebra" is rare, and a tiny one where every document has it."""
+    filler = " ".join(f"word{i}" for i in range(60))
+    big = SparseIndex(tmp_path / "big" / "sparse", tmp_path / "big" / "cache")
+    big.build(
+        [_passage("zoo.txt#0", f"one zebra here {filler}", "zoo.txt")]
+        + [_passage(f"f{i}.txt#0", f"nothing relevant {filler} n{i}", f"f{i}.txt") for i in range(40)]
+    )
+    small = SparseIndex(tmp_path / "small" / "sparse", tmp_path / "small" / "cache")
+    small.build(
+        [
+            _passage("herd.txt#0", "zebra zebra zebra stripes", "herd.txt"),
+            _passage("foal.txt#0", f"a zebra foal {filler}", "foal.txt"),
+        ]
+    )
+    return big, small
+
+
+@pytestmark_integration
+def test_pooled_search_scores_indexes_as_one_collection(tmp_path):
+    big, small = _two_indexes(tmp_path)
+
+    # Searched separately, the tiny index's best hit scores far below the big one's
+    # weaker hit (its own IDF for "zebra" is near zero), so merging by score buries it.
+    assert small.search("zebra", k=1)[0].score < big.search("zebra", k=1)[0].score
+
+    hits = search_pooled([big, small], "zebra", k=5)
+    # Every hit comes back with the index it lives in.
+    assert [("small" if index is small else "big", r.path) for index, r in hits] == [
+        ("small", "herd.txt"),  # three mentions in a short passage: the best match overall
+        ("big", "zoo.txt"),
+        ("small", "foal.txt"),
+    ]
+    # Same-length passages with one mention each now score alike, wherever they live.
+    assert hits[1][1].score == pytest.approx(hits[2][1].score)
+
+
+@pytestmark_integration
+def test_pooled_search_of_one_index_matches_plain_search(tmp_path):
+    _, small = _two_indexes(tmp_path)
+    plain = small.search("zebra foal", k=5)
+    pooled = [r for _, r in search_pooled([small], "zebra foal", k=5)]
+    assert [r.path for r in pooled] == [r.path for r in plain]
+    # (Anserini rounds the scores it reports to four decimals.)
+    assert [r.score for r in pooled] == pytest.approx([r.score for r in plain], abs=1e-4)
+
+
+def test_pooled_search_without_any_index_reports_missing(tmp_path):
+    empty = SparseIndex(tmp_path / "none" / "sparse", tmp_path / "none" / "cache")
+    with pytest.raises(FileNotFoundError):
+        search_pooled([empty], "anything")

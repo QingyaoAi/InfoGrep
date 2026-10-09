@@ -25,7 +25,9 @@ def reciprocal_rank_fusion(
     best: dict[str, Result] = {}
     for results in result_lists:
         for rank, res in enumerate(results):
-            key = f"{res.doc_id}:{res.passage_id}"
+            # abs_path, where known, keeps same-named files of two indexed
+            # directories apart (their doc/passage ids are relative paths).
+            key = f"{res.abs_path or res.doc_id}:{res.passage_id}"
             scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
             # Keep the highest-scoring single-retriever instance for provenance.
             if key not in best or res.score > best[key].score:

@@ -74,6 +74,26 @@ class HybridResults:
     skipped: dict[str, str] = field(default_factory=dict)  # retriever -> reason
 
 
+def _fan_out(names: list[str], run) -> None:
+    """Call ``run(name)`` for every retriever, concurrently.
+
+    Hybrid latency is then the slowest backend, not the sum. Sparse stays on the
+    caller's thread: jnius attaches native threads to the JVM and never detaches pool
+    threads, so JVM work is kept off worker threads.
+    """
+    threads = [
+        threading.Thread(target=run, args=(name,), daemon=True)
+        for name in names
+        if name != "sparse"
+    ]
+    for t in threads:
+        t.start()
+    if "sparse" in names:
+        run("sparse")
+    for t in threads:
+        t.join()
+
+
 class SearchEngine:
     def __init__(self, config: Config):
         self.config = config
@@ -136,17 +156,20 @@ class SearchEngine:
 
     # -- unified entry point -------------------------------------------------
 
-    def search(self, mode: str, query: str, k: int = 10, prf: bool = False) -> HybridResults:
+    def search(
+        self, mode: str, query: str, k: int = 10, prf: bool = False, exclude: tuple = ()
+    ) -> HybridResults:
         """Run one search ``mode`` ("hybrid" or a retriever name).
 
         The single dispatch point shared by the CLI and web UI. Raises ``ValueError``
         for an unknown mode and ``FileNotFoundError`` when a single retriever's index
-        is missing (hybrid instead skips missing backends).
+        is missing (hybrid instead skips missing backends). ``exclude`` names
+        retrievers to leave out of a hybrid search.
         """
         if mode not in MODES:
             raise ValueError(f"unknown mode: {mode}")
         if mode == "hybrid":
-            return self.search_hybrid(query, k=k, prf=prf)
+            return self.search_hybrid(query, k=k, prf=prf, exclude=exclude)
         return HybridResults(results=self._run(mode, query, k, prf=prf), used=[mode])
 
     # -- fused -------------------------------------------------------------
@@ -157,8 +180,12 @@ class SearchEngine:
         k: int = 10,
         retrievers: list[str] | None = None,
         prf: bool = False,
+        exclude: tuple = (),
     ) -> HybridResults:
         names = retrievers or [r for r in ALL_RETRIEVERS if self._enabled(r)]
+        # Left out at the caller's request (e.g. the launcher drops the slow kb backend
+        # unless asked for it), so unlike a disabled backend it isn't reported as skipped.
+        names = [name for name in names if name not in exclude]
         pool = max(k, _POOL_MIN)
 
         out = HybridResults(results=[])
@@ -179,20 +206,7 @@ class SearchEngine:
             except Exception as exc:  # one backend failing shouldn't sink the query
                 out.skipped[name] = f"error: {exc}"
 
-        # Fan out concurrently so hybrid latency is the slowest backend, not the sum.
-        # Sparse stays on the caller's thread: jnius attaches native threads to the
-        # JVM and never detaches pool threads, so JVM work is kept off worker threads.
-        threads = [
-            threading.Thread(target=run, args=(name,), daemon=True)
-            for name in runnable
-            if name != "sparse"
-        ]
-        for t in threads:
-            t.start()
-        if "sparse" in runnable:
-            run("sparse")
-        for t in threads:
-            t.join()
+        _fan_out(runnable, run)
 
         # Assemble in declaration order so used/skipped and fusion are deterministic.
         lists = [hits_by_name[name] for name in runnable if name in hits_by_name]
@@ -213,6 +227,21 @@ class SearchEngine:
 
     # -- maintenance -------------------------------------------------------
 
+    def warm(self) -> None:
+        """Pay the one-time search costs now instead of on the first real query.
+
+        A cold sparse query spends about a second booting the JVM and opening the
+        index, and the graph retriever parses its JSON on first use. UIs call this when
+        they open so that work overlaps with the user typing. Best-effort: a backend
+        with no index yet is simply left cold.
+        """
+        for name in ("sparse", "graph"):
+            if self._enabled(name):
+                try:
+                    self._run(name, "warm", 1)
+                except Exception:
+                    pass
+
     def status(self, check_staleness: bool = True) -> dict:
         from .indexer import Indexer
 
@@ -222,3 +251,83 @@ class SearchEngine:
         from .indexer import Indexer
 
         return Indexer(self.config).reindex(full=full).as_dict()
+
+
+def search_across(
+    engines: list[SearchEngine], mode: str, query: str, k: int = 10, exclude: tuple = ()
+) -> HybridResults:
+    """One search over several indexed directories, ranked as a single collection.
+
+    Each retriever's hits are pooled across the directories by score, then fused across
+    retrievers as usual. Pooling by score is only fair where a score means the same
+    thing in every directory: true for the graph, dense and kb retrievers, not for
+    BM25, so sparse goes through one shared-statistics search instead (see
+    :func:`infogrep.retrieval.sparse.search_pooled`). Query expansion works on one
+    index's statistics and is not offered here.
+    """
+    if mode not in MODES:
+        raise ValueError(f"unknown mode: {mode}")
+    if len(engines) == 1:
+        return engines[0].search(mode, query, k=k, exclude=exclude)
+    hybrid = mode == "hybrid"
+    names = [r for r in ALL_RETRIEVERS if r not in exclude] if hybrid else [mode]
+    pool = max(k, _POOL_MIN) if hybrid else k
+
+    hits_by_name: dict[str, list[Result]] = {}
+    failures: dict[str, Exception] = {}
+
+    def run(name: str) -> None:
+        # A retriever asked for by name runs everywhere; hybrid only where it's enabled.
+        members = [e for e in engines if not hybrid or e._enabled(name)]
+        lists: list[list[Result]] = []
+        if name == "sparse" and members:
+            try:
+                lists.append(_sparse_across(members, query, pool))
+            except Exception as exc:
+                failures[name] = exc
+        else:
+            for engine in members:
+                try:
+                    lists.append(engine._run(name, query, pool))
+                except Exception as exc:  # one directory failing shouldn't sink the rest
+                    failures.setdefault(name, exc)
+        if lists:
+            failures.pop(name, None)
+            hits_by_name[name] = _pool_by_score(lists, pool)
+
+    _fan_out(names, run)
+
+    if not hybrid:
+        if mode in failures:
+            raise failures[mode]
+        return HybridResults(results=hits_by_name.get(mode, [])[:k], used=[mode])
+    out = HybridResults(results=[])
+    for name, exc in failures.items():
+        out.skipped[name] = str(exc) if isinstance(exc, FileNotFoundError) else f"error: {exc}"
+    out.used = [name for name in names if name in hits_by_name]
+    lists = [hits_by_name[name] for name in out.used]
+    out.results = reciprocal_rank_fusion(lists, top_n=k) if lists else []
+    return out
+
+
+def _sparse_across(engines: list[SearchEngine], query: str, k: int) -> list[Result]:
+    from .retrieval.sparse import search_pooled
+
+    root_of = {id(engine.sparse): engine.config.target_dir for engine in engines}
+    hits = search_pooled([engine.sparse for engine in engines], query, k)
+    return [with_file_metadata(result, root_of[id(index)]) for index, result in hits]
+
+
+def _pool_by_score(lists: list[list[Result]], k: int) -> list[Result]:
+    """Merge one retriever's hits from several directories, best score first.
+
+    Directories sharing an Obsidian vault return the same notes; keep one of each.
+    """
+    seen: set[tuple] = set()
+    pooled: list[Result] = []
+    for result in sorted((r for hits in lists for r in hits), key=lambda r: -r.score):
+        key = (result.abs_path or result.path, result.passage_id)
+        if key not in seen:
+            seen.add(key)
+            pooled.append(result)
+    return pooled[:k]

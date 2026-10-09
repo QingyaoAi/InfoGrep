@@ -81,6 +81,58 @@ def test_graph_expansion_follows_links_and_backlinks(tmp_path):
     assert paths0 == {"Attention.md"}
 
 
+def test_per_note_lookups_are_reused_across_queries(tmp_path, monkeypatch):
+    # Search-as-you-type: each keystroke is a query over mostly the same notes.
+    from infogrep.retrieval import kb as kb_module
+
+    fake = FakeObsidian(
+        search=["A.md"], links={"A.md": ["B.md"]}, contents={"A.md": "alpha", "B.md": "beta"}
+    )
+    kb = KnowledgeBaseIndex(_cfg(tmp_path, hops=1), runner=fake)
+    first = kb.search("alp", k=5)
+    assert {h.path for h in first} == {"A.md", "B.md"}
+
+    seen = len(fake.calls)
+    assert kb.search("alph", k=5) == first
+    assert [command for command, _ in fake.calls[seen:]] == ["search"]
+
+    # Not forever: once an entry expires, an edit made in Obsidian shows up.
+    fake.contents["A.md"] = "alpha, edited"
+    monkeypatch.setattr(kb_module, "_LOOKUP_TTL", 0.0)
+    assert kb.search("alpha", k=5)[0].snippet == "alpha, edited"
+
+
+def _first_call_hangs(monkeypatch):
+    """The app never answers the first CLI invocation; later ones succeed."""
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs["timeout"]))
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        return subprocess.CompletedProcess(args, 0, stdout='["A.md"]', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+def test_unanswered_read_is_given_up_on_quickly_and_retried(tmp_path, monkeypatch):
+    calls = _first_call_hangs(monkeypatch)
+    kb = KnowledgeBaseIndex(_cfg(tmp_path))
+    assert kb._search("anything") == ["A.md"]
+    assert len(calls) == 2
+    assert all(timeout <= 5 for _, timeout in calls)  # not the 30 s a write is allowed
+
+
+def test_unanswered_write_is_not_repeated(tmp_path, monkeypatch):
+    # A create that timed out may still have landed; a second one would add "name 1.md".
+    calls = _first_call_hangs(monkeypatch)
+    kb = KnowledgeBaseIndex(_cfg(tmp_path))
+    with pytest.raises(ObsidianCliError):
+        kb.create_note("Agent Knowledge/x.md", "body")
+    assert len(calls) == 1
+
+
 def test_snippet_strips_frontmatter_and_centers_on_match(tmp_path):
     content = "---\ntitle: A\ntags: []\n---\nIntro line. The softmax normalizes scores nicely."
     fake = FakeObsidian(search=["A.md"], contents={"A.md": content})
@@ -118,6 +170,18 @@ def test_hybrid_includes_kb(tmp_path):
     out = engine.search_hybrid("hello", k=3)
     assert out.used == ["kb"]
     assert out.results and out.results[0].retriever == "hybrid"
+
+
+def test_hybrid_exclude_never_calls_kb(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.graph.enabled = True
+    engine = SearchEngine(cfg)
+    fake = FakeObsidian(search=["Note.md"], contents={"Note.md": "hello world"})
+    engine._backends["kb"] = KnowledgeBaseIndex(cfg, runner=fake)
+    out = engine.search("hybrid", "hello", k=3, exclude=("kb",))
+    assert out.used == ["graph"]
+    assert out.skipped == {}  # left out on request, not a backend that failed
+    assert fake.calls == []
 
 
 # -- guarded integration test against the real Obsidian CLI -----------------

@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .config import Config
-from .engine import SearchEngine
+from .engine import SearchEngine, search_across
 
 
 def _reveal_in_file_manager(path: str) -> None:
@@ -471,6 +471,8 @@ async function reveal(path){
   }catch(e){ note('Could not open: ' + esc(String(e)), true); }
 }
 function syncPrf(){ $('prfwrap').style.display = (mode() === 'hybrid' || mode() === 'sparse') ? '' : 'none'; }
+// Have the server open this folder's index now, so the first search isn't the slow one.
+function warm(){ const d = curDir(); if (d) fetch('/api/warm?dir=' + encodeURIComponent(d)).catch(() => {}); }
 
 // ---- wiring ----------------------------------------------------------------
 $('f').addEventListener('submit', search);
@@ -483,13 +485,13 @@ $('rebuild').addEventListener('click', () => {
 $('forget').addEventListener('click', forgetIndex);
 $('sched').addEventListener('change', applySchedule);
 $('schedat').addEventListener('change', () => { if ($('sched').checked) applySchedule(); });
-$('dir').addEventListener('change', () => { renderFolder(); $('q').focus(); });
+$('dir').addEventListener('change', () => { renderFolder(); warm(); $('q').focus(); });
 $('modes').addEventListener('change', syncPrf);
 document.addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement !== $('q')){ e.preventDefault(); $('q').focus(); }
 });
 syncPrf();
-loadIndexes();
+loadIndexes().then(warm);
 </script>
 </body>
 </html>"""
@@ -515,6 +517,12 @@ def _make_handler(directory: Path):
                 eng = engines[key] = SearchEngine(Config.load(key))
             return eng
 
+    def all_engines() -> list[SearchEngine]:
+        """An engine per folder that has an index (``scope=all`` searches them together)."""
+        root = index_home() / "indexes"
+        sources = sorted(root.glob("*/source.txt")) if root.is_dir() else []
+        return [engine_for(src.read_text().strip()) for src in sources]
+
     def list_indexes() -> list[dict]:
         from . import scheduler
         from .indexer import Indexer
@@ -530,14 +538,16 @@ def _make_handler(directory: Path):
                 if not src.is_file():
                     continue
                 target = src.read_text().strip()
+                cfg = Config.load(target)
                 info = {
                     "dir": target,
                     "name": Path(target).name,
                     "scheduled": scheduler.is_scheduled(Path(target)),
                     "schedule_at": schedules.get(target),
+                    "kb": cfg.kb.enabled,  # lets clients offer (or hide) a notes toggle
                 }
                 try:  # fast: read the manifest, don't walk the filesystem
-                    st = Indexer(Config.load(target)).status(check_staleness=False)
+                    st = Indexer(cfg).status(check_staleness=False)
                     info.update(indexed=st.get("indexed", False),
                                 n_files=st.get("n_files"), n_passages=st.get("n_passages"))
                 except Exception:
@@ -654,6 +664,10 @@ def _make_handler(directory: Path):
                 self._json(self._status(qs))
             elif parsed.path == "/api/search":
                 self._json(self._search(qs))
+            elif parsed.path == "/api/warm":  # open a folder's backends before the first query
+                for eng in self._engines(qs):
+                    eng.warm()
+                self._json({"ok": True})
             elif parsed.path == "/api/open":
                 self._json(self._open(qs))
             elif parsed.path == "/api/indexes":
@@ -723,19 +737,36 @@ def _make_handler(directory: Path):
                 info["indexing"] = jobs.get(str(eng.config.target_dir)) == "running"
             return info
 
+        def _engines(self, qs: dict) -> list[SearchEngine]:
+            """The folder(s) a request targets: ``scope=all`` is every indexed folder,
+            otherwise ``dir`` (or the server's default)."""
+            if qs.get("scope", [""])[0] == "all":
+                engines = all_engines()
+                if engines:
+                    return engines
+            return [engine_for(qs.get("dir", [None])[0])]
+
         def _search(self, qs: dict) -> dict:
             q = (qs.get("q", [""])[0]).strip()
             if not q:
                 return {"error": "empty query", "results": []}
-            eng = engine_for(qs.get("dir", [None])[0])
+            engines = self._engines(qs)
             mode = qs.get("mode", ["hybrid"])[0]
             try:
                 k = max(1, min(50, int(qs.get("k", ["10"])[0])))
             except ValueError:
                 k = 10
             prf = qs.get("prf", ["0"])[0] in ("1", "true", "on")
+            # exclude=kb,dense: retrievers to leave out of a hybrid search.
+            exclude = tuple(x for x in qs.get("exclude", [""])[0].split(",") if x)
             try:
-                out = eng.search(mode, q, k=k, prf=prf)
+                if len(engines) == 1:
+                    out = engines[0].search(mode, q, k=k, prf=prf, exclude=exclude)
+                elif prf:
+                    return {"error": "query expansion works on one folder at a time",
+                            "results": []}
+                else:
+                    out = search_across(engines, mode, q, k=k, exclude=exclude)
                 return {
                     "results": [r.to_dict() for r in out.results],
                     "used": out.used,

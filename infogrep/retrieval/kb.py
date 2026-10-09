@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
+import time
 from pathlib import PurePosixPath
 
 from ..config import Config
@@ -28,6 +30,22 @@ _FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
 _SNIPPET_CHARS = 240
 _HOP_DECAY = 0.4
 _APP_DOWN_HINTS = ("make sure obsidian is running", "unable to find obsidian")
+
+# The CLI answers in milliseconds, but now and then the app never answers a request at
+# all: measured at about 1 call in 700 run back to back, and a few in 100 for searches
+# that overlap (search-as-you-type). With ~30 calls per query that is a stalled query
+# every few dozen searches, so a read that goes unanswered is given up on quickly and,
+# reads being idempotent, asked once more. Don't serialize the calls with a lock to
+# dodge the overlap: one lost call then stalls every query queued behind it.
+_READ_TIMEOUTS = {"search": 3.0, "links": 2.0, "backlinks": 2.0, "read": 2.0}  # seconds
+_WRITE_TIMEOUT = 30.0
+
+# How long a note's links / backlinks / text are reused by later searches. Search-as-
+# you-type runs a query per keystroke and successive prefixes land on mostly the same
+# notes (about 3 in 4 per-note calls repeat while one query is typed); the price is that
+# an edit made in Obsidian can take this long to show up in a snippet.
+_LOOKUP_TTL = 30.0
+_LOOKUP_CACHE_MAX = 2000
 
 
 def _tokens(text: str) -> list[str]:
@@ -55,17 +73,27 @@ class KnowledgeBaseIndex:
         self.search_limit = max(1, config.kb.search_limit)
         # Injectable for testing: runner(command, params) -> stdout string.
         self._run = runner or self._default_run
+        self._cli_path: str | None = None  # self.cli resolved on PATH (see _spawn)
+        self._lookups: dict[tuple[str, str], tuple[float, str]] = {}  # see _lookup
 
     # -- CLI plumbing ------------------------------------------------------
 
     def _default_run(self, command: str, params: dict[str, str]) -> str:
-        args = [self.cli, command]
+        if self._cli_path is None:
+            self._cli_path = shutil.which(self.cli) or self.cli
+        args = [self._cli_path, command]
         if self.vault:
             args.append(f"vault={self.vault}")
         # A None value is a bare flag (e.g. ``overwrite``), not a key=value pair.
         args += [k if v is None else f"{k}={v}" for k, v in params.items()]
+        timeout = _READ_TIMEOUTS.get(command, _WRITE_TIMEOUT)
         try:
-            proc = subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
+            try:
+                proc = self._spawn(args, timeout)
+            except subprocess.TimeoutExpired:
+                if command not in _READ_TIMEOUTS:
+                    raise  # a write may have landed; repeating it could duplicate the note
+                proc = self._spawn(args, timeout)
         except FileNotFoundError as exc:
             raise ObsidianCliError(
                 f"Obsidian CLI not found ('{self.cli}'). Install it or set kb.cli."
@@ -74,6 +102,17 @@ class KnowledgeBaseIndex:
             raise ObsidianCliError(f"Obsidian CLI failed: {exc}") from exc
         return (proc.stdout or "") + (proc.stderr or "")
 
+    @staticmethod
+    def _spawn(args: list[str], timeout: float) -> subprocess.CompletedProcess:
+        # close_fds=False plus an absolute executable path lets subprocess use
+        # posix_spawn instead of fork: forking a process that has the JVM mapped costs
+        # ~12 ms per call, spawning ~4 ms. Python's own descriptors (the web server's
+        # socket included) are non-inheritable; all the short-lived child additionally
+        # sees is the JVM's read-only handles on its jar and module files.
+        return subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout, check=False, close_fds=False
+        )
+
     def _call(self, command: str, params: dict[str, str]) -> str:
         out = self._run(command, params)
         low = out.strip().lower()
@@ -81,6 +120,19 @@ class KnowledgeBaseIndex:
             raise ObsidianCliError(
                 "Obsidian is not running. Open the app (and the target vault) to use kb search."
             )
+        return out
+
+    def _lookup(self, command: str, path: str, **params: str) -> str:
+        """A per-note CLI call whose answer is remembered for ``_LOOKUP_TTL`` seconds."""
+        key = (command, path)
+        now = time.monotonic()
+        hit = self._lookups.get(key)
+        if hit is not None and now - hit[0] < _LOOKUP_TTL:
+            return hit[1]
+        out = self._call(command, {"path": path, **params})  # a failure is never cached
+        if len(self._lookups) >= _LOOKUP_CACHE_MAX:
+            self._lookups.clear()
+        self._lookups[key] = (now, out)
         return out
 
     @staticmethod
@@ -109,7 +161,7 @@ class KnowledgeBaseIndex:
         result: set[str] = set()
         for command in ("links", "backlinks"):
             try:
-                out = self._call(command, {"path": path, "format": "json"})
+                out = self._lookup(command, path, format="json")
             except ObsidianCliError:
                 continue  # one note's link lookup failing shouldn't abort the query
             result.update(self._parse_paths(out))
@@ -117,7 +169,7 @@ class KnowledgeBaseIndex:
 
     def _read(self, path: str) -> str:
         try:
-            out = self._call("read", {"path": path})
+            out = self._lookup("read", path)
         except ObsidianCliError:
             return ""
         if out.strip().lower().startswith("error:"):

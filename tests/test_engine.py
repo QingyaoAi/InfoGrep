@@ -1,7 +1,7 @@
 import pytest
 
 from infogrep.config import Config
-from infogrep.engine import SearchEngine
+from infogrep.engine import SearchEngine, search_across
 from infogrep.indexer import Indexer
 
 
@@ -78,3 +78,77 @@ def test_hybrid_fuses_sparse_and_dense(tmp_path):
     # No duplicate passages after fusion.
     keys = [(r.doc_id, r.passage_id) for r in out.results]
     assert len(keys) == len(set(keys))
+
+
+def _light_engine(root, files):
+    """An indexed directory searched without the JVM: hash embeddings + folder graph."""
+    root.mkdir()
+    for name, text in files.items():
+        (root / name).write_text(text)
+    cfg = Config.load(root)
+    cfg.sparse.enabled = False
+    cfg.dense.enabled = True
+    cfg.dense.embedder = "hash"
+    Indexer(cfg).reindex()
+    return SearchEngine(cfg)
+
+
+def test_search_across_pools_directories(tmp_path):
+    work = _light_engine(tmp_path / "work", {
+        "notes.txt": "quarterly budget review for the retrieval project",
+        "fox.txt": "the quick brown fox jumps over the lazy dog",
+    })
+    home = _light_engine(tmp_path / "home", {
+        "notes.txt": "passport renewal appointment and visa photos",
+    })
+
+    out = search_across([work, home], "hybrid", "passport renewal appointment", k=5)
+    assert set(out.used) == {"dense", "graph"}
+    # Both directories have a notes.txt (identical ids); they stay two results, each
+    # pointing into its own directory, and the one that matches leads.
+    paths = [r.abs_path for r in out.results]
+    assert paths[0] == str(tmp_path / "home" / "notes.txt")
+    assert str(tmp_path / "work" / "notes.txt") in paths
+    assert len(paths) == len(set(paths))
+
+    only_dense = search_across([work, home], "dense", "quick brown fox", k=1)
+    assert only_dense.used == ["dense"]
+    assert only_dense.results[0].abs_path == str(tmp_path / "work" / "fox.txt")
+
+    # A single directory is just that directory's own search.
+    alone = search_across([home], "hybrid", "passport", k=5)
+    assert alone.results == home.search("hybrid", "passport", k=5).results
+
+
+def test_search_across_reports_a_retriever_that_fails_everywhere(tmp_path):
+    work = _light_engine(tmp_path / "work", {"a.txt": "alpha"})
+    home = _light_engine(tmp_path / "home", {"b.txt": "beta"})
+    for engine in (work, home):
+        engine.config.sparse.enabled = True  # enabled, but no sparse index was built
+
+    out = search_across([work, home], "hybrid", "alpha", k=3)
+    assert "sparse" in out.skipped and "sparse" not in out.used
+    assert out.results  # the other retrievers still answer
+    with pytest.raises(FileNotFoundError):
+        search_across([work, home], "sparse", "alpha", k=3)
+
+
+@needs_sparse
+def test_search_across_sparse_points_each_hit_at_its_own_directory(tmp_path):
+    engines = []
+    for name, text in (("work", "zebra crossing design notes"), ("home", "zebra enclosure tickets")):
+        root = tmp_path / name
+        root.mkdir()
+        (root / "notes.txt").write_text(text)
+        cfg = Config.load(root)
+        cfg.graph.enabled = False
+        Indexer(cfg).reindex()
+        engines.append(SearchEngine(cfg))
+
+    out = search_across(engines, "hybrid", "zebra", k=5)
+    assert out.used == ["sparse"]
+    assert {r.abs_path for r in out.results} == {
+        str(tmp_path / "work" / "notes.txt"), str(tmp_path / "home" / "notes.txt"),
+    }
+    top = search_across(engines, "sparse", "zebra enclosure", k=1).results[0]
+    assert top.abs_path == str(tmp_path / "home" / "notes.txt")

@@ -130,19 +130,45 @@ def _q(port, path):
     return json.loads(_get(port, path)[1])
 
 
+def test_warm_endpoint_is_best_effort(tmp_path):
+    indexed = _make_indexed(tmp_path / "alpha", {"berry.txt": "blueberries"})
+    (tmp_path / "empty").mkdir()  # default config, nothing indexed
+    httpd, port = _start(indexed)
+    try:
+        assert _q(port, "/api/warm") == {"ok": True}
+        # A folder with no index has nothing to open — still ok, never an error.
+        empty = urllib.parse.quote(str(tmp_path / "empty"))
+        assert _q(port, "/api/warm?dir=" + empty) == {"ok": True}
+        # ...and search still works afterwards.
+        assert _q(port, "/api/search?q=blueberries&mode=dense&k=1")["results"]
+    finally:
+        httpd.shutdown()
+
+
 def test_list_indexes_and_dir_scoped_search(tmp_path):
     a = _make_indexed(tmp_path / "alpha", {"berry.txt": "blueberries rich in antioxidants"})
     b = _make_indexed(tmp_path / "beta", {"car.txt": "the sedan has a strong engine"})
     httpd, port = _start(a)  # server's default dir = alpha
     try:
-        names = {i["name"] for i in _q(port, "/api/indexes")["indexes"]}
-        assert {"alpha", "beta"} <= names
+        indexes = {i["name"]: i for i in _q(port, "/api/indexes")["indexes"]}
+        assert {"alpha", "beta"} <= set(indexes)
+        assert indexes["alpha"]["kb"] is False  # no Obsidian vault configured here
+        # hybrid can leave retrievers out on request
+        assert "dense" in _q(port, "/api/search?q=antioxidants&mode=hybrid")["used"]
+        only_rest = _q(port, "/api/search?q=antioxidants&mode=hybrid&exclude=dense")
+        assert "dense" not in only_rest["used"] and only_rest["skipped"] == {}
         # default (alpha)
         ra = _q(port, "/api/search?q=antioxidants&mode=dense")
         assert ra["results"][0]["path"] == "berry.txt"
         # dir-scoped (beta)
         rb = _q(port, "/api/search?q=engine&mode=dense&dir=" + urllib.parse.quote(str(b)))
         assert rb["results"][0]["path"] == "car.txt"
+        # scope=all: one search over every indexed folder
+        for query, expected in (("antioxidants", a / "berry.txt"), ("engine", b / "car.txt")):
+            hit = _q(port, f"/api/search?q={query}&mode=dense&scope=all&k=1")["results"][0]
+            assert hit["abs_path"] == str(expected)
+        assert _q(port, "/api/warm?scope=all") == {"ok": True}
+        assert "one folder" in _q(port, "/api/search?q=engine&scope=all&prf=1")["error"]
     finally:
         httpd.shutdown()
 

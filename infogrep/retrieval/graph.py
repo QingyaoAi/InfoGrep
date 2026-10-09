@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path, PurePosixPath
 
 from .base import Result
@@ -36,20 +37,37 @@ class FolderGraphIndex:
         self.graph_path = Path(index_dir) / "graph.json"
         self.hops = max(0, hops)
         self.max_folders = max(1, max_folders)
+        self._graph: dict = {}
+        self._stamp: tuple[int, int] | None = None  # (mtime_ns, size) of the cached file
+        self._lock = threading.Lock()
 
     def _load(self) -> dict:
+        """The parsed graph, re-read only when ``graph.json`` changes (a reindex
+        rewrites it): parsing it is most of a query's cost on a large tree."""
         try:
-            return json.loads(self.graph_path.read_text())
-        except (OSError, json.JSONDecodeError):
+            st = self.graph_path.stat()
+        except OSError:
             return {}
+        stamp = (st.st_mtime_ns, st.st_size)
+        with self._lock:
+            if stamp != self._stamp:
+                try:
+                    graph = json.loads(self.graph_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    return {}
+                for node in graph.values():  # matched as sets on every query
+                    node["name_tokens"] = frozenset(node.get("name_tokens", ()))
+                    node["file_tokens"] = frozenset(node.get("file_tokens", ()))
+                self._graph, self._stamp = graph, stamp
+            return self._graph
 
     def _score_folders(self, graph: dict, query_tokens: set[str]) -> dict[str, float]:
         if not query_tokens:
             return {}
         scores: dict[str, float] = {}
         for folder, node in graph.items():
-            name_hits = query_tokens & set(node.get("name_tokens", ()))
-            file_hits = query_tokens & set(node.get("file_tokens", ()))
+            name_hits = query_tokens & node["name_tokens"]
+            file_hits = query_tokens & node["file_tokens"]
             score = _NAME_WEIGHT * len(name_hits) + _FILE_WEIGHT * len(file_hits)
             if score > 0:
                 scores[folder] = score

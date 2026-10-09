@@ -29,3 +29,13 @@ def test_rrf_dedups_by_passage():
     dense = [_r("a", 0.9, "dense")]
     fused = reciprocal_rank_fusion([sparse, dense], top_n=10)
     assert len(fused) == 1
+
+
+def test_rrf_keeps_same_named_files_of_two_directories_apart():
+    # Two indexed directories can both hold "notes.txt": same doc/passage ids, different files.
+    from dataclasses import replace
+
+    here = replace(_r("notes", 5.0, "sparse"), abs_path="/a/notes.txt")
+    there = replace(_r("notes", 4.0, "sparse"), abs_path="/b/notes.txt")
+    fused = reciprocal_rank_fusion([[here, there]], top_n=10)
+    assert [r.abs_path for r in fused] == ["/a/notes.txt", "/b/notes.txt"]

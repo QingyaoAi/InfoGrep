@@ -120,6 +120,25 @@ def test_folder_graph_index_missing_graph_json_returns_empty(tmp_path):
     assert idx.search("anything", k=10) == []
 
 
+def test_folder_graph_index_caches_until_graph_json_changes(tmp_path, monkeypatch):
+    build_graph(tmp_path, _paths())
+    idx = FolderGraphIndex(tmp_path, hops=0, max_folders=5)
+    assert idx.search("recipes", k=10)
+
+    # Unchanged file: later queries reuse the parsed graph instead of re-reading it.
+    reads = []
+    real_loads = json.loads
+    monkeypatch.setattr(json, "loads", lambda text: reads.append(1) or real_loads(text))
+    assert idx.search("taxes", k=10)
+    assert reads == []
+
+    # A reindex rewrites graph.json; the same (long-lived) index must see the new tree.
+    build_graph(tmp_path, {"Recipes/pasta.md", "Invoices/2025/acme.pdf"})
+    assert {h.path for h in idx.search("invoices", k=10)} == {"Invoices/2025/acme.pdf"}
+    assert idx.search("taxes", k=10) == []
+    assert reads == [1]
+
+
 def test_indexer_builds_graph_by_default(tmp_path):
     (tmp_path / "Recipes").mkdir()
     (tmp_path / "Recipes" / "pasta.md").write_text("Boil water. Add pasta.")

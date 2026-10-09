@@ -15,9 +15,11 @@ See :func:`make_analyzer` for the analyzer per language. Search uses an in-proce
 
 from __future__ import annotations
 
+import bisect
 import json
 import re
 import shutil
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -128,7 +130,9 @@ class SparseIndex:
         self.prf_fb_docs = prf_fb_docs
         self.prf_fb_terms = prf_fb_terms
         self._searcher = None  # lazily constructed SimpleSearcher
-        self._reader = None  # lazily opened IndexReader (for PRF term vectors)
+        self._analyzer = None  # the analyzer that searcher parses queries with
+        self._searcher_lock = threading.Lock()
+        self._reader = None  # lazily opened IndexReader (PRF term vectors, pooled search)
 
     @property
     def _lang_marker(self) -> Path:
@@ -204,7 +208,7 @@ class SparseIndex:
             writer.commit()
         finally:
             writer.close()
-        self._searcher = None  # force reopen against the rewritten segments
+        self._searcher = self._reader = None  # force reopen against the rewritten segments
 
     def _write(self, passages: Iterable, removed_ids, create: bool) -> int:
         # infogrep.anserini configures the Anserini classpath and boots the JVM at
@@ -274,7 +278,7 @@ class SparseIndex:
         finally:
             writer.close()
         self._lang_marker.write_text(language)
-        self._searcher = None  # force reopen against the updated index
+        self._searcher = self._reader = None  # force reopen against the updated index
         return n
 
     # -- search ------------------------------------------------------------
@@ -282,18 +286,24 @@ class SparseIndex:
     def _ensure_searcher(self):
         # Query Lucene via Anserini's SimpleSearcher directly (through jnius): BM25
         # needs only the JVM, so the process stays small — no torch/transformers.
-        if self._searcher is None:
-            from ..anserini import autoclass
+        # Locked: a warm-up and the first query can arrive together, and each would
+        # otherwise open its own searcher on the index.
+        with self._searcher_lock:
+            if self._searcher is None:
+                # Checked before touching the JVM, so a folder with no index costs nothing.
+                if not any(self.index_dir.glob("segments*")):
+                    raise FileNotFoundError(
+                        f"No sparse index at {self.index_dir}. Run `infogrep index <dir>` first."
+                    )
+                from ..anserini import autoclass
 
-            if not any(self.index_dir.glob("segments*")):
-                raise FileNotFoundError(
-                    f"No sparse index at {self.index_dir}. Run `infogrep index <dir>` first."
-                )
-            SimpleSearcher = autoclass("io.anserini.search.SimpleSearcher")
-            self._searcher = SimpleSearcher(str(self.index_dir))
-            # Parse queries with the same analyzer the index was built with.
-            self._searcher.set_analyzer(make_analyzer(self.built_language()))
-        return self._searcher
+                SimpleSearcher = autoclass("io.anserini.search.SimpleSearcher")
+                searcher = SimpleSearcher(str(self.index_dir))
+                # Parse queries with the same analyzer the index was built with.
+                self._analyzer = make_analyzer(self.built_language())
+                searcher.set_analyzer(self._analyzer)
+                self._searcher = searcher
+            return self._searcher
 
     def _fields_map(self):
         """java.util.HashMap<String,Float> of field -> boost for multi-field search."""
@@ -307,14 +317,17 @@ class SparseIndex:
         return m
 
     def _index_reader(self):
-        if self._reader is None:
-            from ..anserini import autoclass
+        with self._searcher_lock:
+            if self._reader is None:
+                from ..anserini import autoclass
 
-            FSDirectory = autoclass("org.apache.lucene.store.FSDirectory")
-            Paths = autoclass("java.nio.file.Paths")
-            DirectoryReader = autoclass("org.apache.lucene.index.DirectoryReader")
-            self._reader = DirectoryReader.open(FSDirectory.open(Paths.get(str(self.index_dir))))
-        return self._reader
+                FSDirectory = autoclass("org.apache.lucene.store.FSDirectory")
+                Paths = autoclass("java.nio.file.Paths")
+                DirectoryReader = autoclass("org.apache.lucene.index.DirectoryReader")
+                self._reader = DirectoryReader.open(
+                    FSDirectory.open(Paths.get(str(self.index_dir)))
+                )
+            return self._reader
 
     def _expansion_terms(self, searcher, query: str) -> list[str]:
         """Pseudo-relevance feedback terms from the *multi-field* top results.
@@ -396,20 +409,71 @@ class SparseIndex:
         # Multi-field BM25 over contents + filename + path (boosted), so queries can
         # match the file name / path, not only the passage text.
         hits = searcher.search_fields(effective_query, self._fields_map(), k)
-        results: list[Result] = []
-        for hit in hits:
-            raw = json.loads(hit.lucene_document.get("raw"))
-            text = raw.get("contents", "")
-            results.append(
-                Result(
-                    doc_id=raw.get("path", hit.docid),
-                    passage_id=hit.docid,
-                    path=raw.get("path", ""),
-                    snippet=text[:_SNIPPET_CHARS],
-                    score=float(hit.score),
-                    retriever="sparse",
-                    page=raw.get("page"),
-                    offset=raw.get("offset"),
-                )
-            )
-        return results
+        return [_result(hit.lucene_document.get("raw"), hit.docid, hit.score) for hit in hits]
+
+
+def _result(raw_json: str, docid: str, score: float) -> Result:
+    """A search hit from its stored ``raw`` record."""
+    raw = json.loads(raw_json)
+    return Result(
+        doc_id=raw.get("path", docid),
+        passage_id=docid,
+        path=raw.get("path", ""),
+        snippet=raw.get("contents", "")[:_SNIPPET_CHARS],
+        score=float(score),
+        retriever="sparse",
+        page=raw.get("page"),
+        offset=raw.get("offset"),
+    )
+
+
+def search_pooled(
+    indexes: list[SparseIndex], query: str, k: int = 10
+) -> list[tuple[SparseIndex, Result]]:
+    """BM25 over several indexes, scored as if they were one collection.
+
+    Scores from separate searches can't be merged: IDF comes from each index's own term
+    statistics, so the same match scores an order of magnitude lower in a 160-passage
+    index than in a 380k-passage one, and the small index's hits would never surface.
+    A Lucene ``MultiReader`` shares the statistics across all of them instead. Each hit
+    comes back with the index it belongs to (its path is relative to that index's
+    directory). Indexes without a built index are left out.
+    """
+    indexes = [index for index in indexes if any(index.index_dir.glob("segments*"))]
+    if not indexes:
+        raise FileNotFoundError("No sparse index to search. Run `infogrep index <dir>` first.")
+    from ..anserini import autoclass, cast
+
+    MultiReader = autoclass("org.apache.lucene.index.MultiReader")
+    IndexSearcher = autoclass("org.apache.lucene.search.IndexSearcher")
+    QueryGenerator = autoclass("io.anserini.search.query.BagOfWordsQueryGenerator")
+
+    # One analyzed query can only serve indexes built with the same analyzer and field
+    # weights. Indexes that differ are searched as separate pools and merged by score,
+    # which is the best available when they don't even tokenize alike.
+    pools: dict[tuple, list[SparseIndex]] = {}
+    for index in indexes:
+        key = (index.built_language(), tuple(sorted(index.field_boosts.items())))
+        pools.setdefault(key, []).append(index)
+
+    hits: list[tuple[SparseIndex, Result]] = []
+    for members in pools.values():
+        first = members[0]
+        simple = first._ensure_searcher()  # the same scoring a single-index search uses
+        readers = [member._index_reader() for member in members]
+        starts = [0]  # first doc number of each member inside the MultiReader
+        for reader in readers[:-1]:
+            starts.append(starts[-1] + reader.maxDoc())
+        # The cast picks IndexSearcher(IndexReader) over IndexSearcher(IndexReaderContext).
+        searcher = IndexSearcher(
+            cast("org.apache.lucene.index.IndexReader", MultiReader(readers, False))
+        )
+        searcher.setSimilarity(simple.get_similarity())
+        lucene_query = QueryGenerator().buildQuery(first._fields_map(), first._analyzer, query)
+        stored = searcher.storedFields()
+        for scored in searcher.search(lucene_query, k).scoreDocs:
+            doc = stored.document(scored.doc)
+            owner = members[bisect.bisect_right(starts, scored.doc) - 1]
+            hits.append((owner, _result(doc.get("raw"), doc.get("id"), scored.score)))
+    hits.sort(key=lambda hit: hit[1].score, reverse=True)
+    return hits[:k]

@@ -5,6 +5,12 @@ hotkey, type, and open the matching file.
 
 - **Hotkey:** ⌘⇧-Space (Command+Shift+Space) toggles the search panel
 - **↑ / ↓** navigate · **↵** reveal the selected file in Finder · **Esc** dismiss
+- Results update as you type; a spinner next to the query shows while a search is running.
+  Pressing **↵** before the results for what you typed have arrived searches right away
+  (it never opens a result left over from an earlier query).
+- **Notes** checkbox (shown for folders with an Obsidian knowledge base configured): also
+  search the vault. Off by default — that part answers through the Obsidian app and is
+  much slower than the local index.
 - Menu-bar 🔎 icon → Search… / Quit
 
 ## Download & run (standalone app)
@@ -60,7 +66,8 @@ installs it to `/Applications`, and runs both the backend and the app at login.
 ## Pick / index folders
 
 The menu-bar 🔎 lists every InfoGrep index under **Search in:** — click one to switch which
-folder ⌘⇧Space searches (the choice is remembered). **Index a Folder…** opens a folder
+folder ⌘⇧Space searches (the choice is remembered). With more than one index, **All Folders**
+(the default) searches them together, ranked as a single collection. **Index a Folder…** opens a folder
 picker and indexes it in the background (shown as `(indexing…)` until ready). The browser
 UI has the same controls (a folder dropdown + **＋ folder**).
 

@@ -40,7 +40,9 @@ struct SearchResult {
 
 // Calls back with the results plus an error message when the search failed (server
 // down, backend error), so the panel can say what went wrong instead of showing nothing.
-func apiSearch(_ query: String, dir: String?,
+// `notes` adds the Obsidian knowledge base to the search; it is left out by default
+// because it answers through the Obsidian app, far slower than the local indexes.
+func apiSearch(_ query: String, dir: String?, allFolders: Bool, notes: Bool,
                completion: @escaping ([SearchResult], String?) -> Void) {
     guard var comp = URLComponents(string: "\(kAPIBase)/api/search") else { completion([], nil); return }
     comp.queryItems = [
@@ -48,7 +50,12 @@ func apiSearch(_ query: String, dir: String?,
         URLQueryItem(name: "mode", value: kSearchMode),
         URLQueryItem(name: "k", value: String(kMaxResults)),
     ]
-    if let dir, !dir.isEmpty { comp.queryItems?.append(URLQueryItem(name: "dir", value: dir)) }
+    if allFolders {
+        comp.queryItems?.append(URLQueryItem(name: "scope", value: "all"))
+    } else if let dir, !dir.isEmpty {
+        comp.queryItems?.append(URLQueryItem(name: "dir", value: dir))
+    }
+    if !notes { comp.queryItems?.append(URLQueryItem(name: "exclude", value: "kb")) }
     guard let url = comp.url else { completion([], nil); return }
     var req = URLRequest(url: url)
     req.timeoutInterval = 30  // first search after a (re)index can be slow to warm up
@@ -80,7 +87,8 @@ func apiSearch(_ query: String, dir: String?,
 }
 
 struct IndexEntry { let name: String; let dir: String; let indexed: Bool
-                    let indexing: Bool; let scheduled: Bool }
+                    let indexing: Bool; let scheduled: Bool
+                    let kb: Bool }  // an Obsidian knowledge base is configured for it
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
@@ -88,21 +96,34 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     var statusItem: NSStatusItem!
     var panel: NSPanel!
     var field: NSTextField!
+    var spinner: NSProgressIndicator!
+    var notesToggle: NSButton!
     var statusLabel: NSTextField!
     var table: NSTableView!
     var results: [SearchResult] = []
     var hotKeyRef: EventHotKeyRef?
     var seq = 0
-    var debounce: DispatchWorkItem?
+    var debounce: DispatchWorkItem?  // set only while a search waits out the typing pause
+    var loading = false  // a search for the field's current text is pending or running
     // Which index to search (nil = the server's default). Persisted across launches.
     var indexes: [IndexEntry] = []
     var selectedDir: String? = UserDefaults.standard.string(forKey: "infogrep.selectedDir")
+    // Search every indexed folder at once — the default — rather than selectedDir alone.
+    var searchAll = UserDefaults.standard.object(forKey: "infogrep.searchAll") as? Bool ?? true
+    // "All" only differs from the one folder there is once a second one exists.
+    var searchingAll: Bool { searchAll && indexes.count > 1 }
 
     func currentFolderName() -> String {
+        if searchingAll { return "all folders" }
         if let d = selectedDir, !d.isEmpty { return (d as NSString).lastPathComponent }
         return "InfoGrep"
     }
     func updatePlaceholder() { field?.placeholderString = "Search \(currentFolderName())…" }
+    // The Notes checkbox only means something where a knowledge base is configured.
+    func updateNotesToggle() {
+        let searched = searchingAll ? indexes : indexes.filter { $0.dir == selectedDir }
+        notesToggle?.isHidden = !searched.contains(where: { $0.kb })
+    }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         setupMainMenu()
@@ -245,24 +266,31 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
             none.isEnabled = false
             menu.addItem(none)
         }
+        if indexes.count > 1 {
+            let all = NSMenuItem(title: "   All Folders", action: #selector(selectAll), keyEquivalent: "")
+            all.target = self
+            all.state = searchingAll ? .on : .off
+            menu.addItem(all)
+        }
         for idx in indexes {
             let title = "   " + idx.name
                 + (idx.indexing ? "  (indexing…)" : (idx.indexed ? "" : "  (not indexed)"))
             let item = NSMenuItem(title: title, action: #selector(selectIndex(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = idx.dir
-            item.state = (idx.dir == selectedDir) ? .on : .off
+            item.state = (!searchingAll && idx.dir == selectedDir) ? .on : .off
             menu.addItem(item)
         }
         menu.addItem(.separator())
         let add = NSMenuItem(title: "Index a Folder…", action: #selector(indexFolder), keyEquivalent: "i")
         add.target = self
         menu.addItem(add)
-        if let dir = selectedDir, let idx = indexes.first(where: { $0.dir == dir }) {
+        // One switch per searched folder: every folder under "All Folders", else the selected one.
+        for idx in indexes where searchingAll || idx.dir == selectedDir {
             let daily = NSMenuItem(title: "Daily Re-index of \(idx.name)  (3 AM)",
                                    action: #selector(toggleSchedule(_:)), keyEquivalent: "")
             daily.target = self
-            daily.representedObject = dir
+            daily.representedObject = idx.dir
             daily.state = idx.scheduled ? .on : .off  // checkmark = daily updates enabled
             menu.addItem(daily)
         }
@@ -289,7 +317,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
                             dir: dir,
                             indexed: (i["indexed"] as? Bool) ?? false,
                             indexing: (i["indexing"] as? Bool) ?? false,
-                            scheduled: (i["scheduled"] as? Bool) ?? false))
+                            scheduled: (i["scheduled"] as? Bool) ?? false,
+                            kb: (i["kb"] as? Bool) ?? false))
                     }
                 }
             }
@@ -310,6 +339,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
                 }
                 self.rebuildMenu()
                 self.updatePlaceholder()
+                self.updateNotesToggle()
             }
         }.resume()
     }
@@ -318,8 +348,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         guard let dir = sender.representedObject as? String else { return }
         selectedDir = dir
         UserDefaults.standard.set(dir, forKey: "infogrep.selectedDir")
+        setSearchAll(false)
+    }
+
+    @objc func selectAll() { setSearchAll(true) }
+
+    func setSearchAll(_ on: Bool) {
+        searchAll = on
+        UserDefaults.standard.set(on, forKey: "infogrep.searchAll")
         rebuildMenu()
         updatePlaceholder()
+        updateNotesToggle()
     }
 
     @objc func toggleSchedule(_ sender: NSMenuItem) {
@@ -387,7 +426,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         blur.layer?.cornerRadius = 12
         panel.contentView = blur
 
-        field = NSTextField(frame: NSRect(x: 16, y: h - 56, width: w - 32, height: 40))
+        field = NSTextField(frame: NSRect(x: 16, y: h - 56, width: w - 136, height: 40))
         field.placeholderString = "Search InfoGrep…"
         field.font = NSFont.systemFont(ofSize: 24, weight: .light)
         field.isBezeled = false
@@ -396,6 +435,29 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         field.delegate = self
         field.autoresizingMask = [.width, .minYMargin]
         blur.addSubview(field)
+
+        // Spins from the moment the query changes until its results are on screen, so
+        // there is always a visible answer to "did my search go through?".
+        spinner = NSProgressIndicator(frame: NSRect(x: w - 38, y: h - 46, width: 20, height: 20))
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        spinner.autoresizingMask = [.minXMargin, .minYMargin]
+        blur.addSubview(spinner)
+
+        // Off by default, and off again at every launch: searching notes goes through
+        // the Obsidian app, which is what makes a search slow. Hidden until the selected
+        // folder is known to have a knowledge base (see updateNotesToggle).
+        notesToggle = NSButton(checkboxWithTitle: "Notes", target: self,
+                               action: #selector(notesToggled))
+        notesToggle.frame = NSRect(x: w - 110, y: h - 46, width: 66, height: 20)
+        notesToggle.controlSize = .small
+        notesToggle.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        notesToggle.toolTip = "Also search the Obsidian knowledge base (slower)"
+        notesToggle.refusesFirstResponder = true  // typing stays in the search field
+        notesToggle.autoresizingMask = [.minXMargin, .minYMargin]
+        notesToggle.isHidden = true
+        blur.addSubview(notesToggle)
 
         let sep = NSBox(frame: NSRect(x: 0, y: h - 64, width: w, height: 1))
         sep.boxType = .separator
@@ -422,7 +484,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         scroll.documentView = table
         blur.addSubview(scroll)
 
-        // Feedback line under the search field: errors and "no results" (hidden otherwise).
+        // Feedback line under the search field: "searching", errors and "no results"
+        // (hidden otherwise).
         statusLabel = NSTextField(labelWithString: "")
         statusLabel.frame = NSRect(x: 16, y: h - 100, width: w - 32, height: 20)
         statusLabel.font = NSFont.systemFont(ofSize: 13)
@@ -437,6 +500,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     func showStatus(_ message: String?) {
         statusLabel.stringValue = message ?? ""
         statusLabel.isHidden = (message == nil)
+    }
+
+    func setLoading(_ on: Bool) {
+        loading = on
+        if on {
+            spinner.startAnimation(nil)
+            if results.isEmpty { showStatus("Searching…") }
+        } else {
+            spinner.stopAnimation(nil)
+        }
     }
 
     // MARK: hotkey
@@ -465,6 +538,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         updatePlaceholder()
+        updateNotesToggle()
+        warmBackend()
         // Keep the last query/results so reopening the panel picks up where it left off;
         // select the text so typing immediately replaces it, like Spotlight.
         field.selectText(nil)
@@ -472,34 +547,78 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
 
     func hidePanel() { panel.orderOut(nil) }
 
-    // MARK: search
-    func controlTextDidChange(_ note: Notification) {
-        let q = field.stringValue.trimmingCharacters(in: .whitespaces)
-        debounce?.cancel()
-        if q.isEmpty { results = []; table.reloadData(); showStatus(nil); return }
-        seq += 1
-        let mySeq = seq
-        let dir = selectedDir
-        let work = DispatchWorkItem { [weak self] in
-            apiSearch(q, dir: dir) { res, err in
-                guard let self, mySeq == self.seq else { return }
-                self.results = res
-                self.table.reloadData()
-                if let err {
-                    self.showStatus(err)
-                    self.ensureBackend()  // restart the bundled server if it died
-                } else if res.isEmpty {
-                    self.showStatus(self.indexes.contains(where: { $0.indexed })
-                        ? "No results in \(self.currentFolderName())"
-                        : "No indexes yet — choose “Index a Folder…” from the 🔎 menu")
-                } else {
-                    self.showStatus(nil)
-                    self.table.selectRowIndexes([0], byExtendingSelection: false)
-                }
-            }
+    /// The first query after the server (re)starts pays a one-time second or so (JVM
+    /// boot, index open). Ask for that work as the panel opens, so it overlaps with typing.
+    func warmBackend() {
+        guard var comp = URLComponents(string: "\(kAPIBase)/api/warm") else { return }
+        if searchingAll {
+            comp.queryItems = [URLQueryItem(name: "scope", value: "all")]
+        } else if let dir = selectedDir, !dir.isEmpty {
+            comp.queryItems = [URLQueryItem(name: "dir", value: dir)]
         }
+        guard let url = comp.url else { return }
+        URLSession.shared.dataTask(with: url).resume()
+    }
+
+    // MARK: search
+    func query() -> String { field.stringValue.trimmingCharacters(in: .whitespaces) }
+
+    func controlTextDidChange(_ note: Notification) {
+        // While an input method (pinyin, kana, …) is composing, the field holds raw
+        // keystrokes rather than the query. Committing the text fires this again.
+        if let editor = field.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
+        debounce?.cancel()
+        debounce = nil
+        seq += 1  // whatever is in flight no longer matches the field
+        if query().isEmpty {
+            results = []; table.reloadData(); setLoading(false); showStatus(nil)
+            return
+        }
+        setLoading(true)
+        let work = DispatchWorkItem { [weak self] in self?.runSearch() }
         debounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    func runSearch() {
+        debounce?.cancel()  // ↵ can get here before the typing pause has run out
+        debounce = nil
+        let q = query()
+        guard !q.isEmpty else { return }
+        let mySeq = seq
+        apiSearch(q, dir: selectedDir, allFolders: searchingAll,
+                  notes: notesToggle.state == .on) { [weak self] res, err in
+            guard let self, mySeq == self.seq else { return }
+            self.results = res
+            self.table.reloadData()
+            self.setLoading(false)
+            if let err {
+                self.showStatus(err)
+                self.ensureBackend()  // restart the bundled server if it died
+            } else if res.isEmpty {
+                self.showStatus(self.indexes.contains(where: { $0.indexed })
+                    ? "No results in \(self.currentFolderName())"
+                    : "No indexes yet — choose “Index a Folder…” from the 🔎 menu")
+            } else {
+                self.showStatus(nil)
+                self.table.selectRowIndexes([0], byExtendingSelection: false)
+            }
+        }
+    }
+
+    // The list on screen was fetched with the old setting: search again right away.
+    @objc func notesToggled() {
+        guard !query().isEmpty else { return }
+        seq += 1
+        setLoading(true)
+        runSearch()
+    }
+
+    // ↵ opens the selected result, but only once the list belongs to the text in the
+    // field. Before that it means "search now": it skips the rest of the typing pause,
+    // and never opens a hit left over from an earlier, shorter query.
+    func submit() {
+        if debounce != nil { runSearch() } else if !loading { openSelected() }
     }
 
     // Intercept arrows / return / escape from the search field.
@@ -507,7 +626,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         switch sel {
         case #selector(NSResponder.moveDown(_:)): move(1); return true
         case #selector(NSResponder.moveUp(_:)): move(-1); return true
-        case #selector(NSResponder.insertNewline(_:)): openSelected(); return true
+        case #selector(NSResponder.insertNewline(_:)): submit(); return true
         case #selector(NSResponder.cancelOperation(_:)): hidePanel(); return true
         default: return false
         }
