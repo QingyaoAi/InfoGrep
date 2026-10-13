@@ -56,7 +56,7 @@ jobs:
           # afresh, so load the servers too: a new major of one of them (mcp 2.x did
           # this) would otherwise ship an app whose MCP server cannot start.
           PYTHONPATH="$RES/backend" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
-            "$RES/python/bin/python3" -c "import infogrep.mcp_server, infogrep.web"
+            "$RES/python/bin/python3" -c "import infogrep.mcp_server, infogrep.web, infogrep.ask"
           test -x "$RES/jre/bin/java"
 
       - name: Package the zip and the DMG

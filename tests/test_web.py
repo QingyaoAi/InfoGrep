@@ -169,6 +169,12 @@ def test_list_indexes_and_dir_scoped_search(tmp_path):
             assert hit["abs_path"] == str(expected)
         assert _q(port, "/api/warm?scope=all") == {"ok": True}
         assert "one folder" in _q(port, "/api/search?q=engine&scope=all&prf=1")["error"]
+        # type=<id>: only files of one kind; the ids come with the index list
+        types = {t["id"]: t["label"] for t in _q(port, "/api/indexes")["types"]}
+        assert types["pdf"] == "PDF" and "text" in types
+        assert _q(port, "/api/search?q=engine&mode=dense&scope=all&type=text")["results"]
+        assert _q(port, "/api/search?q=engine&mode=dense&scope=all&type=pdf")["results"] == []
+        assert "unknown file type" in _q(port, "/api/search?q=engine&type=zip")["error"]
     finally:
         httpd.shutdown()
 
@@ -317,5 +323,125 @@ def test_full_rebuild_via_index_endpoint(tmp_path):
             time.sleep(0.1)
         info = json.loads(body)
         assert info["indexed"] is True and info["n_files"] == 1
+    finally:
+        httpd.shutdown()
+
+
+def test_ping_says_which_indexes_this_server_reads(tmp_path, isolated_index_home):
+    from infogrep import __version__
+
+    httpd, port = _start(_indexed_dir(tmp_path))
+    try:
+        # What an MCP server checks before handing its searches over.
+        assert _q(port, "/api/ping") == {
+            "version": __version__, "home": str(isolated_index_home.resolve()),
+        }
+    finally:
+        httpd.shutdown()
+
+
+_asked: list = []  # every _FakeAsk made, in order
+
+
+class _FakeAsk:
+    """Stands in for infogrep.ask.Ask: no dsh, an answer after two steps."""
+
+    def __init__(self, question, directory=None, session=None, server=None, notes=False):
+        import threading
+
+        from infogrep.ask import AskError
+
+        if question == "no dsh":
+            raise AskError("DeepSeek Harness (dsh) is not installed")
+        self.question, self.directory, self.session = question, directory, session
+        self.server, self.notes = server, notes
+        self.cancelled = False
+        self._go = threading.Event()
+        if question != "slow":
+            self._go.set()
+        _asked.append(self)
+
+    def events(self):
+        from infogrep.ask import AskError
+
+        yield {"type": "session", "id": self.session or "session-new"}
+        yield {"type": "step", "text": "Searching “berries”"}
+        self._go.wait(10)
+        if self.cancelled:
+            raise AskError("cancelled")
+        yield {"type": "step", "text": "Reading berry.txt"}
+        yield {"type": "answer", "text": "Antioxidants.", "sources": ["/docs/berry.txt"]}
+
+    def cancel(self):
+        self.cancelled = True
+        self._go.set()
+
+
+def _answered(port, job_id, want):
+    state = {}
+    for _ in range(100):
+        state = _q(port, f"/api/ask?id={job_id}")
+        if state["status"] == want:
+            break
+        time.sleep(0.05)
+    return state
+
+
+def test_ask_api_runs_a_question_and_reports_steps_then_the_answer(tmp_path, monkeypatch):
+    import infogrep.ask
+
+    monkeypatch.setattr(infogrep.ask, "Ask", _FakeAsk)
+    _asked.clear()
+    httpd, port = _start(_indexed_dir(tmp_path))
+    try:
+        assert "ask" in _q(port, "/api/indexes")  # whether dsh is there to answer with
+        assert _q(port, "/api/ask") == {"status": "gone"}  # nothing asked yet
+
+        q = urllib.parse.quote("What are berries rich in?")
+        started = json.loads(_post(port, f"/api/ask?q={q}&session=session-7")[1])
+        assert started == {"ok": True, "id": 1}
+        state = _answered(port, 1, "done")
+        assert state["steps"] == ["Searching “berries”", "Reading berry.txt"]
+        assert state["answer"] == "Antioxidants." and state["sources"] == ["/docs/berry.txt"]
+        assert state["session"] == "session-7" and state["question"] == "What are berries rich in?"
+
+        run = _asked[0]
+        assert run.session == "session-7"
+        assert str(run.directory) == str(tmp_path.resolve())  # the server's default folder
+        assert run.server == f"http://127.0.0.1:{port}"  # the agent's searches come back here
+        assert run.notes is False  # the knowledge base stays out unless asked for
+
+        # scope=all leaves the folder out, which means every indexed one
+        _post(port, "/api/ask?q=again&scope=all&notes=1")
+        assert _asked[1].directory is None and _asked[1].session is None
+        assert _asked[1].notes is True
+        assert _answered(port, 2, "done")["id"] == 2
+        assert _q(port, "/api/ask?id=1") == {"status": "gone"}  # only the latest is kept
+    finally:
+        httpd.shutdown()
+
+
+def test_ask_api_reports_what_stops_a_question(tmp_path, monkeypatch):
+    import infogrep.ask
+
+    monkeypatch.setattr(infogrep.ask, "Ask", _FakeAsk)
+    _asked.clear()
+    httpd, port = _start(_indexed_dir(tmp_path))
+    try:
+        assert json.loads(_post(port, "/api/ask?q=")[1]) == {"ok": False, "error": "empty question"}
+        refused = json.loads(_post(port, "/api/ask?q=" + urllib.parse.quote("no dsh"))[1])
+        assert refused == {"ok": False, "error": "DeepSeek Harness (dsh) is not installed"}
+
+        first = json.loads(_post(port, "/api/ask?q=slow")[1])["id"]
+        assert _q(port, f"/api/ask?id={first}")["status"] == "running"
+        assert json.loads(_post(port, "/api/ask/cancel")[1]) == {"ok": True}
+        assert _answered(port, first, "cancelled")["error"] == "cancelled"
+
+        # One question at a time: asking another stops the one in flight.
+        _post(port, "/api/ask?q=slow")
+        slow = _asked[-1]
+        second = json.loads(_post(port, "/api/ask?q=quick")[1])["id"]
+        assert slow.cancelled
+        assert _answered(port, second, "done")["answer"] == "Antioxidants."
     finally:
         httpd.shutdown()

@@ -300,3 +300,45 @@ def test_pooled_search_without_any_index_reports_missing(tmp_path):
     empty = SparseIndex(tmp_path / "none" / "sparse", tmp_path / "none" / "cache")
     with pytest.raises(FileNotFoundError):
         search_pooled([empty], "anything")
+
+
+@pytestmark_integration
+def test_type_filter_returns_the_best_of_that_type(tmp_path):
+    filler = " ".join(f"word{i}" for i in range(40))
+    passages = [
+        # Thirty text files that outrank every PDF for "zebra"...
+        _passage(f"t{i}.txt#0", f"zebra zebra zebra n{i}", f"notes/t{i}.txt")
+        for i in range(30)
+    ] + [
+        _passage("a.pdf#0", f"one zebra {filler}", "docs/a.pdf"),
+        _passage("B.PDF#0", f"zebra zebra {filler}", "docs/B.PDF"),  # extension case
+        _passage("c.pdf#0", f"no stripes here {filler}", "docs/c.pdf"),  # not a match
+        # ...and a name containing the word "pdf" that is not a PDF.
+        _passage("x.txt#0", f"zebra zebra zebra zebra {filler}", "docs/pdf-export.txt"),
+    ]
+    si = SparseIndex(tmp_path / "sparse", tmp_path / "cache")
+    si.build(passages)
+
+    everything = si.search("zebra", k=50)
+    assert [r.path for r in everything[:3]].count("docs/a.pdf") == 0  # buried unfiltered
+
+    pdfs = si.search("zebra", k=3, exts=("pdf",))
+    assert [r.path for r in pdfs] == ["docs/B.PDF", "docs/a.pdf"]
+    # Exactly the PDFs of the full ranking, in the same order, with the same scores.
+    expected = [r for r in everything if r.path.lower().endswith(".pdf")]
+    assert [r.path for r in pdfs] == [r.path for r in expected]
+    assert [r.score for r in pdfs] == pytest.approx([r.score for r in expected], abs=1e-4)
+
+    assert len(si.search("zebra", k=5, exts=("txt",))) == 5
+    assert si.search("zebra", k=5, exts=("pptx",)) == []
+    both = si.search("zebra", k=50, exts=("pdf", "txt"))
+    assert len(both) == len(everything) == 33
+
+
+@pytestmark_integration
+def test_type_filter_applies_across_pooled_indexes(tmp_path):
+    big, small = _two_indexes(tmp_path)  # every file in both is a .txt
+    assert [r.path for _, r in search_pooled([big, small], "zebra", k=5, exts=("txt",))] == [
+        "herd.txt", "zoo.txt", "foal.txt",
+    ]
+    assert search_pooled([big, small], "zebra", k=5, exts=("pdf",)) == []

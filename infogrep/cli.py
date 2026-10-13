@@ -154,6 +154,45 @@ def learn(
 
 
 @app.command()
+def ask(
+    question: str = typer.Argument(..., help="Question to answer from the indexed files."),
+    directory: Path | None = typer.Option(
+        None, "--dir", "-d", help="Indexed directory to consult (default: every indexed folder)."
+    ),
+    follow_up: bool = typer.Option(
+        False, "--continue", "-c", help="Follow up on the previous question."
+    ),
+    notes: bool = typer.Option(
+        False, "--notes", help="Also search the Obsidian knowledge base (slower)."
+    ),
+) -> None:
+    """Answer a question from the indexed files with a DeepSeek Harness (dsh) agent.
+
+    The agent searches and reads the files, then answers; it runs for this one
+    question and cannot change anything. Progress goes to stderr, the answer to stdout.
+    """
+    from . import ask as asking
+
+    session = asking.latest_session() if follow_up else None
+    if follow_up and session is None:
+        typer.echo("[infogrep] no earlier question to continue — asking afresh.", err=True)
+    try:
+        run = asking.Ask(question, directory=directory, session=session, notes=notes)
+        for event in run.events():
+            if event["type"] == "step":
+                typer.echo(f"[infogrep] {event['text']}", err=True)
+            elif event["type"] == "answer":
+                typer.echo(event["text"])
+                if event["sources"]:
+                    typer.echo("\nSources:")
+                    for path in event["sources"]:
+                        typer.echo(f"  {path}")
+    except asking.AskError as exc:
+        typer.echo(f"[infogrep] {exc}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def status(
     directory: Path = typer.Argument(Path.cwd(), help="Indexed directory."),
 ) -> None:
@@ -187,12 +226,25 @@ def status(
 
 @app.command()
 def mcp(
-    directory: Path = typer.Option(Path.cwd(), "--dir", "-d", help="Default indexed directory."),
+    directory: Path | None = typer.Option(
+        None, "--dir", "-d",
+        help="Default indexed directory (default: $INFOGREP_DIR, else the current directory).",
+    ),
+    all_folders: bool = typer.Option(
+        False, "--all-folders", help="Search every indexed folder unless a tool call names one."
+    ),
+    read_only: bool = typer.Option(
+        False, "--read-only", help="Leave out the tools that write (reindex, kb_learn)."
+    ),
 ) -> None:
     """Run the MCP server (stdio) so coding agents can call InfoGrep's search tools."""
     from .mcp_server import main as serve
 
-    serve(directory=str(Path(directory).expanduser().resolve()))
+    serve(
+        directory=str(Path(directory).expanduser().resolve()) if directory else None,
+        all_folders=all_folders,
+        read_only=read_only,
+    )
 
 
 @app.command()
@@ -261,6 +313,86 @@ def schedule_list() -> None:
         return
     for a in agents:
         typer.echo(f"[infogrep] {a['hour']:02d}:{a['minute']:02d} daily  {a['directory']}")
+
+
+dsh_app = typer.Typer(help="Offer InfoGrep's search tools to DeepSeek Harness (dsh) sessions.")
+app.add_typer(dsh_app, name="dsh")
+
+
+def _dsh_profiles(chosen: list[str] | None) -> list[str]:
+    from . import dsh
+
+    return chosen or [dsh.DEFAULT_PROFILE]
+
+
+@dsh_app.command("install")
+def dsh_install(
+    directory: Path = typer.Option(..., "--dir", "-d", help="Indexed directory to search by default."),
+    profile: list[str] = typer.Option(
+        None, "--profile", "-p", help="dsh profile to add InfoGrep to (repeatable). Default: web."
+    ),
+) -> None:
+    """Register the InfoGrep MCP server in a dsh profile (tools: mcp__infogrep__…)."""
+    from . import dsh
+
+    failed = False
+    for name in _dsh_profiles(profile):
+        try:
+            outcome = dsh.register(name, directory)
+        except (FileNotFoundError, ValueError) as exc:
+            typer.echo(f"[infogrep] dsh profile '{name}': {exc}", err=True)
+            failed = True
+            continue
+        typer.echo(
+            f"[infogrep] dsh profile '{name}': "
+            + {
+                "added": "InfoGrep added; its tools appear in new sessions",
+                "updated": "InfoGrep entry updated",
+                "unchanged": "InfoGrep already registered",
+                "manual": "already has an infogrep server that was added by hand; left as is",
+            }[outcome]
+            + f"  ({dsh.patch_path(name)})"
+        )
+    if failed:
+        raise typer.Exit(code=1)
+
+
+@dsh_app.command("uninstall")
+def dsh_uninstall(
+    profile: list[str] = typer.Option(
+        None, "--profile", "-p", help="dsh profile to remove InfoGrep from (repeatable). Default: all."
+    ),
+) -> None:
+    """Remove the InfoGrep MCP server that `infogrep dsh install` registered."""
+    from . import dsh
+
+    for name in profile or dsh.profiles():
+        try:
+            outcome = dsh.unregister(name)
+        except ValueError as exc:
+            typer.echo(f"[infogrep] dsh profile '{name}': {exc}", err=True)
+            raise typer.Exit(code=1)
+        if outcome == "removed":
+            typer.echo(f"[infogrep] dsh profile '{name}': InfoGrep removed")
+        elif outcome == "manual":
+            typer.echo(
+                f"[infogrep] dsh profile '{name}': its infogrep server was added by hand; "
+                f"remove it from {dsh.patch_path(name)} yourself"
+            )
+
+
+@dsh_app.command("list")
+def dsh_list() -> None:
+    """Show which dsh profiles have InfoGrep."""
+    from . import dsh
+
+    names = dsh.profiles()
+    if not names:
+        typer.echo(f"[infogrep] no dsh profiles under {dsh.dsh_home()} (is dsh installed?)")
+        return
+    label = {"managed": "yes", "manual": "yes (added by hand)", "absent": "no"}
+    for name in names:
+        typer.echo(f"[infogrep] {name:24s} {label[dsh.status(name)]}")
 
 
 if __name__ == "__main__":  # pragma: no cover

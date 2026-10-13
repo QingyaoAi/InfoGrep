@@ -14,7 +14,7 @@ import re
 import threading
 from pathlib import Path, PurePosixPath
 
-from .base import Result
+from .base import Result, file_ext
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 _HOP_DECAY = 0.5
@@ -117,7 +117,7 @@ class FolderGraphIndex:
             frontier = nxt
         return ranked
 
-    def search(self, query: str, k: int = 10) -> list[Result]:
+    def search(self, query: str, k: int = 10, exts: tuple = ()) -> list[Result]:
         graph = self._load()
         if not graph:
             return []
@@ -143,7 +143,7 @@ class FolderGraphIndex:
                 reverse=True,
             )
             for rel in rels:
-                if rel in seen:
+                if rel in seen or (exts and file_ext(rel) not in exts):
                     continue
                 seen.add(rel)
                 containing = str(PurePosixPath(rel).parent)

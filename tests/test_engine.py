@@ -1,7 +1,7 @@
 import pytest
 
-from infogrep.config import Config
-from infogrep.engine import SearchEngine, search_across
+from infogrep.config import DEFAULT_DOC_TYPES, DEFAULT_IMAGE_TYPES, Config
+from infogrep.engine import FILE_TYPES, SearchEngine, search_across
 from infogrep.indexer import Indexer
 
 
@@ -152,3 +152,27 @@ def test_search_across_sparse_points_each_hit_at_its_own_directory(tmp_path):
     }
     top = search_across(engines, "sparse", "zebra enclosure", k=1).results[0]
     assert top.abs_path == str(tmp_path / "home" / "notes.txt")
+
+
+def test_file_types_cover_everything_indexed_by_default():
+    # A default-indexed extension outside every group could never be filtered for.
+    grouped = [ext for _, exts in FILE_TYPES.values() for ext in exts]
+    assert len(grouped) == len(set(grouped))  # each extension belongs to one group
+    assert set(DEFAULT_DOC_TYPES + DEFAULT_IMAGE_TYPES) <= set(grouped)
+
+
+def test_type_filter_through_hybrid_and_across_directories(tmp_path):
+    work = _light_engine(tmp_path / "work", {
+        "plan.txt": "zebra migration plan",
+        "plan.md": "zebra migration plan",
+    })
+    home = _light_engine(tmp_path / "home", {"zoo.md": "zebra enclosure tickets"})
+
+    one = work.search("hybrid", "zebra migration plan", k=5, exts=("md",))
+    assert [r.path for r in one.results] == ["plan.md"]
+    assert [r.ext for r in work.search("dense", "zebra", k=5, exts=("txt",)).results] == ["txt"]
+
+    both = search_across([work, home], "hybrid", "zebra", k=5, exts=("md",))
+    assert {r.abs_path for r in both.results} == {
+        str(tmp_path / "work" / "plan.md"), str(tmp_path / "home" / "zoo.md"),
+    }

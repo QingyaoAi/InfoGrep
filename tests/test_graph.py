@@ -180,3 +180,15 @@ def test_hybrid_includes_graph_by_default(tmp_path):
     out = SearchEngine(cfg).search_hybrid("recipes", k=10)
     assert out.used == ["graph"]
     assert {r.path for r in out.results} == {"Recipes/pasta.md", "Recipes/soup.md"}
+
+
+def test_folder_graph_index_filters_by_file_type(tmp_path):
+    build_graph(tmp_path, _paths())
+    idx = FolderGraphIndex(tmp_path, hops=0, max_folders=5)
+    assert {h.path for h in idx.search("taxes", k=10, exts=("pdf",))} == {
+        "Taxes/2024/w2.pdf", "Taxes/2023/w2.pdf",
+    }
+    assert [h.path for h in idx.search("taxes", k=10, exts=("csv",))] == ["Taxes/2024/receipts.csv"]
+    assert idx.search("taxes", k=10, exts=("docx",)) == []
+    # k counts files of the wanted type, not files looked at.
+    assert len(idx.search("taxes", k=1, exts=("csv",))) == 1

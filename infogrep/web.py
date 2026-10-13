@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .config import Config
-from .engine import SearchEngine, search_across
+from .engine import FILE_TYPES, SearchEngine, search_across
 
 
 def _reveal_in_file_manager(path: str) -> None:
@@ -213,6 +213,7 @@ PAGE = r"""<!doctype html>
   .seg input:checked + span { }
   .seg label:has(input:checked) { background:var(--acc); color:var(--acc-fg); font-weight:600; }
   .chk { color:var(--mut); display:flex; align-items:center; gap:6px; font-size:13.5px; }
+  #types { width:fit-content; flex-wrap:wrap; margin:8px 0 4px; }
   .knum { display:flex; align-items:center; gap:6px; color:var(--mut); font-size:13.5px; }
   .knum input { width:60px; }
 
@@ -221,6 +222,16 @@ PAGE = r"""<!doctype html>
   .meta .err { color:var(--danger); }
   .hit { background:var(--card); border:1px solid var(--bd); border-radius:12px;
     padding:12px 15px; margin:10px 0; transition:border-color .12s, transform .12s; }
+  /* file-type tag: the extension, tinted by kind (the launcher uses the same colours) */
+  .tag { font-size:10.5px; font-weight:650; letter-spacing:.3px; text-transform:uppercase;
+    padding:2px 8px; border-radius:20px; color:var(--tc, var(--mut));
+    background:color-mix(in srgb, var(--tc, var(--mut)) 18%, transparent); }
+  .tag.t-pdf { --tc:#ff453a; } .tag.t-doc { --tc:#0a84ff; } .tag.t-slides { --tc:#ff9f0a; }
+  .tag.t-sheet { --tc:#30d158; } .tag.t-image { --tc:#bf5af2; } .tag.t-data { --tc:#40c8e0; }
+  @media (prefers-color-scheme: light) {
+    .tag.t-pdf { --tc:#d70015; } .tag.t-doc { --tc:#0040dd; } .tag.t-slides { --tc:#c93400; }
+    .tag.t-sheet { --tc:#248a3d; } .tag.t-image { --tc:#8944ab; } .tag.t-data { --tc:#0071a4; }
+  }
   .hit.openable { cursor:pointer; }
   .hit.openable:hover { border-color:var(--acc); }
   .hit .top { display:flex; gap:9px; align-items:baseline; flex-wrap:wrap; }
@@ -228,13 +239,21 @@ PAGE = r"""<!doctype html>
   .hit .score { color:var(--mut); font-size:12px; font-variant-numeric:tabular-nums; }
   .badge { font-size:10.5px; padding:2px 8px; border-radius:20px; border:1px solid var(--bd);
     color:var(--acc); background:color-mix(in srgb, var(--acc) 10%, transparent); }
-  .badge.ext { color:var(--mut); background:transparent; }
   .hit .reveal { margin-left:auto; font-size:11px; color:var(--mut); white-space:nowrap; }
   .hit .path { color:var(--mut); font-size:11.5px; margin-top:2px; word-break:break-all; }
   .snip { margin-top:7px; color:color-mix(in srgb, var(--fg) 82%, var(--mut)); white-space:pre-wrap;
     font-size:13.5px; overflow-wrap:anywhere; }
   mark { background:var(--mark); color:inherit; border-radius:3px; padding:0 1px; }
   .empty { text-align:center; color:var(--mut); padding:40px 0 20px; }
+  /* an answer (Ask mode): what the agent did, what it concluded, the files it used */
+  .answer { background:var(--card); border:1px solid var(--bd); border-radius:12px;
+    padding:14px 16px; margin:10px 0; }
+  .answer .steps { color:var(--mut); font-size:12.5px; }
+  .answer .steps div:before { content:"› "; }
+  .answer .text { white-space:pre-wrap; overflow-wrap:anywhere; font-size:14.5px; margin-top:10px; }
+  .answer .srcs { margin-top:12px; padding-top:10px; border-top:1px solid var(--bd-soft);
+    color:var(--mut); font-size:12.5px; }
+  .answer .src { color:var(--acc); cursor:pointer; word-break:break-all; margin-top:3px; }
   .spin { display:inline-block; width:14px; height:14px; border:2px solid var(--mut);
     border-top-color:transparent; border-radius:50%; animation:sp .7s linear infinite;
     vertical-align:-2px; margin-right:6px; }
@@ -282,24 +301,40 @@ PAGE = r"""<!doctype html>
       <label title="Embedding search (meaning and paraphrase)"><input type="radio" name="mode" value="dense"/><span>Semantic</span></label>
       <label title="Obsidian knowledge-base graph"><input type="radio" name="mode" value="kb"/><span>Notes</span></label>
       <label title="Folder/filename metadata graph"><input type="radio" name="mode" value="graph"/><span>Folders</span></label>
+      <label id="askmode" style="display:none" title="A DeepSeek Harness agent searches and reads your files to answer a question"><input type="radio" name="mode" value="ask"/><span>Ask</span></label>
     </div>
-    <div class="knum"><span>results</span><input type="number" id="k" value="10" min="1" max="50"/></div>
+    <div class="knum" id="kwrap"><span>results</span><input type="number" id="k" value="10" min="1" max="50"/></div>
     <label class="chk" id="prfwrap" title="RM3 pseudo-relevance feedback: expand the query with terms from top results">
       <input type="checkbox" id="prf"/> query expansion</label>
+    <label class="chk" id="noteswrap" title="Let the agent search the Obsidian knowledge base too (slower)">
+      <input type="checkbox" id="notes"/> include notes</label>
+    <label class="chk" id="followwrap" title="Continue the conversation the last answer belongs to">
+      <input type="checkbox" id="follow"/> follow-up on the last answer</label>
   </div>
 
+  <div class="seg" id="types" title="Only show results of one file type"></div>
   <div class="meta" id="meta"></div>
   <div id="results"></div>
 </main>
-<footer>Local-first search — nothing leaves this machine. <a href="https://github.com/QingyaoAi/InfoGrep">GitHub</a></footer>
+<footer><span id="local">Local-first search — nothing leaves this machine.</span> <a href="https://github.com/QingyaoAi/InfoGrep">GitHub</a></footer>
 
 <script>
 const $ = id => document.getElementById(id);
 let INDEXES = [];          // /api/indexes payload entries
+let TYPES = [];            // file-type groups: {id, label, exts}
 let POLL = null;           // status poll timer while indexing
 function curDir(){ return $('dir').value || ''; }
 function entry(dir){ return INDEXES.find(i => i.dir === dir); }
 function mode(){ return document.querySelector('#modes input:checked').value; }
+function ftype(){ const e = document.querySelector('#types input:checked'); return e ? e.value : ''; }
+function typeOf(ext){ const t = TYPES.find(t => t.exts.includes(ext)); return t ? t.id : ''; }
+function renderTypes(types){
+  if (TYPES.length === types.length) return;   // already drawn (keep the current choice)
+  TYPES = types;
+  $('types').innerHTML = [{id:'', label:'All types'}].concat(types).map((t, i) =>
+    '<label><input type="radio" name="ftype" value="' + esc(t.id) + '"' + (i ? '' : ' checked') +
+    '/><span>' + esc(t.label) + '</span></label>').join('');
+}
 
 function esc(s){ const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 function highlight(text, q){
@@ -325,7 +360,9 @@ async function loadIndexes(keep){
   try{
     const d = await (await fetch('/api/indexes')).json();
     $('ver').textContent = d.version ? 'v' + d.version : '';
+    $('askmode').style.display = d.ask ? '' : 'none';   // answering questions needs dsh
     INDEXES = d.indexes || [];
+    renderTypes(d.types || []);
     const sel = $('dir'); const prev = keep || sel.value || d.default;
     sel.innerHTML = '';
     for (const i of INDEXES){
@@ -335,6 +372,7 @@ async function loadIndexes(keep){
     }
     if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
     renderFolder();
+    syncMode();
   }catch(e){}
 }
 async function renderFolder(){
@@ -429,12 +467,14 @@ async function applySchedule(){
 
 // ---- search ----------------------------------------------------------------
 async function search(ev){
-  ev.preventDefault();
+  if (ev) ev.preventDefault();
   const q = $('q').value.trim(); if (!q) return;
+  if (mode() === 'ask') return ask(q);
   $('go').disabled = true; note('<span class="spin"></span>searching…'); $('results').innerHTML = '';
   try{
     const p = new URLSearchParams({q, mode: mode(), k: $('k').value,
       prf: $('prf').checked ? '1' : '0', dir: curDir()});
+    if (ftype()) p.set('type', ftype());
     const r = await (await fetch('/api/search?' + p)).json();
     if (r.error){ note(esc(r.error), true); return; }
     const used = (r.used || []).join(', ') || '—';
@@ -446,9 +486,9 @@ async function search(ev){
       const card = el('div', 'hit');
       const top = el('div', 'top');
       top.appendChild(el('span', 'fname', esc(h.filename || h.path) + (h.page != null ? '  · p.' + h.page : '')));
+      if (h.ext) top.appendChild(el('span', 'tag t-' + typeOf(h.ext), esc(h.ext)));
       top.appendChild(el('span', 'score', '[' + Number(h.score).toFixed(3) + ']'));
       top.appendChild(el('span', 'badge', esc(h.retriever)));
-      if (h.ext) top.appendChild(el('span', 'badge ext', esc(h.ext)));
       if (h.abs_path){
         top.appendChild(el('span', 'reveal', '📂 open folder'));
         card.classList.add('openable');
@@ -470,7 +510,64 @@ async function reveal(path){
     if (!res.ok) note('Could not open: ' + esc(res.error || 'error'), true);
   }catch(e){ note('Could not open: ' + esc(String(e)), true); }
 }
-function syncPrf(){ $('prfwrap').style.display = (mode() === 'hybrid' || mode() === 'sparse') ? '' : 'none'; }
+
+// ---- ask -------------------------------------------------------------------
+let ASKED = 0;      // the question on screen; polls for an earlier one are dropped
+let SESSION = '';   // the conversation the last answer belongs to, for a follow-up
+async function ask(q){
+  $('go').disabled = true; note('<span class="spin"></span>thinking…'); $('results').innerHTML = '';
+  try{
+    const p = new URLSearchParams({q, dir: curDir()});
+    if ($('follow').checked && SESSION) p.set('session', SESSION);
+    if ($('notes').checked && (entry(curDir()) || {}).kb) p.set('notes', '1');
+    const r = await (await fetch('/api/ask?' + p, {method:'POST'})).json();
+    if (!r.ok){ note(esc(r.error || 'failed'), true); $('go').disabled = false; return; }
+    ASKED = r.id; pollAsk(r.id);
+  }catch(e){ note(esc(String(e)), true); $('go').disabled = false; }
+}
+async function pollAsk(id){
+  if (id !== ASKED) return;
+  let s;
+  try{ s = await (await fetch('/api/ask?id=' + id)).json(); }
+  catch(e){ note(esc(String(e)), true); $('go').disabled = false; return; }
+  if (id !== ASKED) return;
+  const steps = s.steps || [], sources = s.sources || [];
+  $('results').innerHTML = '';
+  if (steps.length || s.answer){
+    const card = el('div', 'answer');
+    if (steps.length) card.appendChild(el('div', 'steps', steps.map(t => '<div>' + esc(t) + '</div>').join('')));
+    if (s.answer) card.appendChild(el('div', 'text', esc(s.answer)));
+    if (sources.length){
+      const box = el('div', 'srcs', 'Sources');
+      for (const path of sources){
+        const row = el('div', 'src', '📂 ' + esc(path));
+        row.title = 'Open this file’s folder';
+        row.addEventListener('click', () => reveal(path));
+        box.appendChild(row);
+      }
+      card.appendChild(box);
+    }
+    $('results').appendChild(card);
+  }
+  if (s.status === 'running'){ setTimeout(() => pollAsk(id), 700); return; }
+  $('go').disabled = false;
+  if (s.status === 'done'){ SESSION = s.session || ''; note('answered from ' + sources.length + ' file(s)'); syncMode(); }
+  else note(esc(s.error || s.status), true);
+}
+// Show the controls that mean something in the current mode.
+function syncMode(){
+  const m = mode(), asking = m === 'ask';
+  $('prfwrap').style.display = (m === 'hybrid' || m === 'sparse') ? '' : 'none';
+  $('kwrap').style.display = asking ? 'none' : '';
+  $('types').style.display = asking ? 'none' : '';
+  $('followwrap').style.display = (asking && SESSION) ? '' : 'none';
+  $('noteswrap').style.display = (asking && (entry(curDir()) || {}).kb) ? '' : 'none';
+  $('q').placeholder = asking ? 'Ask a question about your files…' : 'Search file contents…  ( / to focus )';
+  $('go').textContent = asking ? 'Ask' : 'Search';
+  $('local').textContent = asking
+    ? 'An answer is written by the model dsh uses: the passages the agent reads are sent to it.'
+    : 'Local-first search — nothing leaves this machine.';
+}
 // Have the server open this folder's index now, so the first search isn't the slow one.
 function warm(){ const d = curDir(); if (d) fetch('/api/warm?dir=' + encodeURIComponent(d)).catch(() => {}); }
 
@@ -485,12 +582,13 @@ $('rebuild').addEventListener('click', () => {
 $('forget').addEventListener('click', forgetIndex);
 $('sched').addEventListener('change', applySchedule);
 $('schedat').addEventListener('change', () => { if ($('sched').checked) applySchedule(); });
-$('dir').addEventListener('change', () => { renderFolder(); warm(); $('q').focus(); });
-$('modes').addEventListener('change', syncPrf);
+$('dir').addEventListener('change', () => { renderFolder(); syncMode(); warm(); $('q').focus(); });
+$('modes').addEventListener('change', syncMode);
+$('types').addEventListener('change', () => search());   // re-run the query for that type
 document.addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement !== $('q')){ e.preventDefault(); $('q').focus(); }
 });
-syncPrf();
+syncMode();
 loadIndexes().then(warm);
 </script>
 </body>
@@ -502,11 +600,13 @@ PAGE = PAGE.replace("__ICON_DATA_URI__", _icon_data_uri())
 def _make_handler(directory: Path):
     import threading
 
-    from .config import index_home
+    from .config import index_home, indexed_dirs
 
     default_dir = str(Config.load(directory).target_dir)
     engines: dict[str, SearchEngine] = {}  # dir -> SearchEngine (warm searchers)
     jobs: dict[str, str] = {}  # dir -> "running" | "done" | "error: ..."
+    # The one question being answered, or the last one that was (see start_ask).
+    asked: dict = {"job": None, "run": None}
     state_lock = threading.Lock()
 
     def engine_for(d: str | None) -> SearchEngine:
@@ -519,9 +619,7 @@ def _make_handler(directory: Path):
 
     def all_engines() -> list[SearchEngine]:
         """An engine per folder that has an index (``scope=all`` searches them together)."""
-        root = index_home() / "indexes"
-        sources = sorted(root.glob("*/source.txt")) if root.is_dir() else []
-        return [engine_for(src.read_text().strip()) for src in sources]
+        return [engine_for(str(d)) for d in indexed_dirs()]
 
     def list_indexes() -> list[dict]:
         from . import scheduler
@@ -640,6 +738,71 @@ def _make_handler(directory: Path):
             shutil.rmtree(idx)
         return {"ok": True, "dir": key}
 
+    def start_ask(
+        question: str, d: str | None, everywhere: bool, session: str, server: str, notes: bool
+    ) -> dict:
+        """Hand a question to a dsh agent (see :mod:`infogrep.ask`); poll it with ask_state.
+
+        One question runs at a time: asking another stops the one in flight.
+        """
+        from .ask import Ask, AskError
+
+        with state_lock:
+            running, previous = asked["run"], asked["job"]
+        if running is not None:
+            running.cancel()
+        target = None if everywhere else engine_for(d).config.target_dir
+        try:
+            run = Ask(question, directory=target, session=session or None, server=server,
+                      notes=notes)
+        except AskError as exc:
+            return {"ok": False, "error": str(exc)}
+        job = {"id": (previous["id"] if previous else 0) + 1, "status": "running",
+               "question": question, "steps": [], "answer": "", "sources": [],
+               "session": session, "error": ""}
+        with state_lock:
+            asked.update(job=job, run=run)
+
+        def work():
+            try:
+                for event in run.events():
+                    with state_lock:
+                        if event["type"] == "session":
+                            job["session"] = event["id"]
+                        elif event["type"] == "step":
+                            job["steps"].append(event["text"])
+                        elif event["type"] == "answer":
+                            job.update(status="done", answer=event["text"],
+                                       sources=event["sources"])
+            except AskError as exc:
+                with state_lock:
+                    job.update(status="cancelled" if run.cancelled else "error", error=str(exc))
+            except Exception as exc:  # report it to the client rather than hang its poll
+                with state_lock:
+                    job.update(status="error", error=f"{type(exc).__name__}: {exc}")
+            finally:
+                with state_lock:
+                    if asked["run"] is run:
+                        asked["run"] = None
+
+        threading.Thread(target=work, daemon=True).start()
+        return {"ok": True, "id": job["id"]}
+
+    def ask_state(job_id: str) -> dict:
+        """Where a question stands: its steps so far, and the answer once there is one."""
+        with state_lock:
+            job = asked["job"]
+            if job is None or (job_id and job_id != str(job["id"])):
+                return {"status": "gone"}
+            return {**job, "steps": list(job["steps"])}
+
+    def cancel_ask() -> dict:
+        with state_lock:
+            running = asked["run"]
+        if running is not None:
+            running.cancel()
+        return {"ok": True}
+
     class Handler(BaseHTTPRequestHandler):
         # Quiet by default (no per-request stderr logging).
         def log_message(self, *args):
@@ -660,8 +823,12 @@ def _make_handler(directory: Path):
             qs = parse_qs(parsed.query)
             if parsed.path in ("/", "/index.html"):
                 self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            elif parsed.path == "/api/ping":  # who is listening here, and on which indexes
+                self._json({"version": __version__, "home": str(index_home().resolve())})
             elif parsed.path == "/api/status":
                 self._json(self._status(qs))
+            elif parsed.path == "/api/ask":  # poll a question started with POST
+                self._json(ask_state(qs.get("id", [""])[0]))
             elif parsed.path == "/api/search":
                 self._json(self._search(qs))
             elif parsed.path == "/api/warm":  # open a folder's backends before the first query
@@ -672,9 +839,14 @@ def _make_handler(directory: Path):
                 self._json(self._open(qs))
             elif parsed.path == "/api/indexes":
                 indexes = list_indexes()
+                types = [{"id": tid, "label": label, "exts": list(exts)}
+                         for tid, (label, exts) in FILE_TYPES.items()]
+                from .ask import dsh_command
+
                 self._json(
                     {"indexes": indexes, "default": effective_default(indexes),
-                     "version": __version__}
+                     "types": types, "version": __version__,
+                     "ask": dsh_command() is not None}  # question answering needs dsh
                 )
             elif parsed.path == "/api/index":  # start (re)indexing a folder
                 self._json(self._start_index(qs))
@@ -691,12 +863,32 @@ def _make_handler(directory: Path):
             qs = parse_qs(parsed.query)
             if parsed.path == "/api/index":
                 self._json(self._start_index(qs))
+            elif parsed.path == "/api/ask":
+                self._json(self._start_ask(qs))
+            elif parsed.path == "/api/ask/cancel":
+                self._json(cancel_ask())
             elif parsed.path == "/api/schedule":
                 self._json(self._set_schedule(qs))
             elif parsed.path == "/api/forget":
                 self._json(forget_index((qs.get("dir", [""])[0]).strip()))
             else:
                 self._json({"error": "not found"}, code=404)
+
+        def _start_ask(self, qs: dict) -> dict:
+            question = (qs.get("q", [""])[0]).strip()
+            if not question:
+                return {"ok": False, "error": "empty question"}
+            # The agent's searches come back to this server, which has the indexes open.
+            server = f"http://127.0.0.1:{self.server.server_address[1]}"
+            return start_ask(
+                question,
+                qs.get("dir", [None])[0],
+                qs.get("scope", [""])[0] == "all",
+                qs.get("session", [""])[0],  # continue that conversation
+                server,
+                # The knowledge base is slow to search, so it is only used on request.
+                qs.get("notes", ["0"])[0] in ("1", "true", "on"),
+            )
 
         def _start_index(self, qs: dict) -> dict:
             full = (qs.get("full", ["0"])[0]).lower() in ("1", "true", "on")
@@ -759,14 +951,21 @@ def _make_handler(directory: Path):
             prf = qs.get("prf", ["0"])[0] in ("1", "true", "on")
             # exclude=kb,dense: retrievers to leave out of a hybrid search.
             exclude = tuple(x for x in qs.get("exclude", [""])[0].split(",") if x)
+            # type=pdf: only files of that kind (an id from FILE_TYPES; see /api/indexes).
+            ftype = qs.get("type", [""])[0]
+            if ftype and ftype not in FILE_TYPES:
+                return {"error": f"unknown file type: {ftype}", "results": []}
+            exts = FILE_TYPES[ftype][1] if ftype else ()
             try:
                 if len(engines) == 1:
-                    out = engines[0].search(mode, q, k=k, prf=prf, exclude=exclude)
+                    out = engines[0].search(
+                        mode, q, k=k, prf=prf, exclude=exclude, exts=exts
+                    )
                 elif prf:
                     return {"error": "query expansion works on one folder at a time",
                             "results": []}
                 else:
-                    out = search_across(engines, mode, q, k=k, exclude=exclude)
+                    out = search_across(engines, mode, q, k=k, exclude=exclude, exts=exts)
                 return {
                     "results": [r.to_dict() for r in out.results],
                     "used": out.used,

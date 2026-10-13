@@ -37,7 +37,10 @@ _APP_DOWN_HINTS = ("make sure obsidian is running", "unable to find obsidian")
 # every few dozen searches, so a read that goes unanswered is given up on quickly and,
 # reads being idempotent, asked once more. Don't serialize the calls with a lock to
 # dodge the overlap: one lost call then stalls every query queued behind it.
-_READ_TIMEOUTS = {"search": 3.0, "links": 2.0, "backlinks": 2.0, "read": 2.0}  # seconds
+# "Quickly" differs by call: a per-note lookup answers in milliseconds or never, but
+# the vault search is slow on its own for common words ("a": 10 s on a ~900-note
+# vault), and cutting that off would turn a slow answer into no answer.
+_READ_TIMEOUTS = {"search": 15.0, "links": 2.0, "backlinks": 2.0, "read": 2.0}  # seconds
 _WRITE_TIMEOUT = 30.0
 
 # How long a note's links / backlinks / text are reused by later searches. Search-as-
@@ -237,7 +240,9 @@ class KnowledgeBaseIndex:
 
     # -- public ------------------------------------------------------------
 
-    def search(self, query: str, k: int = 10) -> list[Result]:
+    def search(self, query: str, k: int = 10, exts: tuple = ()) -> list[Result]:
+        if exts and "md" not in exts:
+            return []  # the vault only yields Markdown notes: don't bother the app
         paths = self._search(query)
         if not paths:
             return []

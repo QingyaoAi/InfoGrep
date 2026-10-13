@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# InfoGrep uninstaller — removes the app, login agents and MCP registration.
+# InfoGrep uninstaller — removes the app, login agents and MCP registrations.
 # Indexes (~/.infogrep) are kept unless you pass --purge.
 #
 #   ./uninstall.sh            # remove app + agents + MCP, keep indexes
@@ -36,6 +36,15 @@ if command -v claude >/dev/null 2>&1; then
   say "Unregistering InfoGrep MCP server…"
   claude mcp remove infogrep -s user >/dev/null 2>&1 || true
 fi
+
+# 4b) ...and from DeepSeek Harness (only the entry `infogrep dsh install` wrote) --
+INFOGREP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.venv/bin/infogrep"
+if [ -x "$INFOGREP" ] && [ -d "${DSH_HOME:-$HOME/.dsh}/profiles" ]; then
+  "$INFOGREP" dsh uninstall || true
+fi
+
+# 4c) What `infogrep ask` kept: its dsh overlay and the last week's conversations --
+rm -rf "${INFOGREP_HOME:-$HOME/.infogrep}/ask"
 
 # 5) Indexes -----------------------------------------------------------------
 if [ "$PURGE" = "1" ]; then

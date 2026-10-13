@@ -13,7 +13,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
-from .config import Config
+from .config import DEFAULT_IMAGE_TYPES, Config
 from .retrieval.base import Result, with_file_metadata
 from .retrieval.fusion import reciprocal_rank_fusion
 
@@ -22,6 +22,18 @@ _POOL_MIN = 20
 
 ALL_RETRIEVERS = ("sparse", "dense", "kb", "graph")
 MODES = ("hybrid",) + ALL_RETRIEVERS
+
+# File-type filters the UIs offer: id -> (label, extensions). Between them they cover
+# every extension indexed by default; anything else is only reachable unfiltered.
+FILE_TYPES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "pdf": ("PDF", ("pdf",)),
+    "doc": ("Word", ("doc", "docx", "rtf", "odt")),
+    "slides": ("Slides", ("ppt", "pptx", "odp")),
+    "sheet": ("Sheets", ("xls", "xlsx", "ods", "csv", "tsv")),
+    "text": ("Text", ("txt", "md", "markdown", "rst", "tex")),
+    "image": ("Images", tuple(DEFAULT_IMAGE_TYPES)),
+    "data": ("JSON", ("json", "jsonl")),
+}
 
 
 def _make_sparse(config: Config):
@@ -127,10 +139,14 @@ class SearchEngine:
 
     # -- individual retrievers --------------------------------------------
 
-    def _run(self, name: str, query: str, k: int, prf: bool = False) -> list[Result]:
+    def _run(
+        self, name: str, query: str, k: int, prf: bool = False, exts: tuple = ()
+    ) -> list[Result]:
         if name not in _FACTORIES:
             raise ValueError(f"unknown retriever: {name}")
         kwargs = {"prf": prf} if name == "sparse" else {}
+        if exts:  # only files with these extensions (see Retriever.search)
+            kwargs["exts"] = exts
         hits = self._backend(name).search(query, k=k, **kwargs)
         # KB paths are vault-relative and we only know the vault's name, not its
         # filesystem root, so enrich with filename/ext only (root=None leaves abs_path
@@ -157,20 +173,28 @@ class SearchEngine:
     # -- unified entry point -------------------------------------------------
 
     def search(
-        self, mode: str, query: str, k: int = 10, prf: bool = False, exclude: tuple = ()
+        self,
+        mode: str,
+        query: str,
+        k: int = 10,
+        prf: bool = False,
+        exclude: tuple = (),
+        exts: tuple = (),
     ) -> HybridResults:
         """Run one search ``mode`` ("hybrid" or a retriever name).
 
         The single dispatch point shared by the CLI and web UI. Raises ``ValueError``
         for an unknown mode and ``FileNotFoundError`` when a single retriever's index
         is missing (hybrid instead skips missing backends). ``exclude`` names
-        retrievers to leave out of a hybrid search.
+        retrievers to leave out of a hybrid search; ``exts`` restricts the results to
+        files with those extensions (e.g. one of ``FILE_TYPES``).
         """
         if mode not in MODES:
             raise ValueError(f"unknown mode: {mode}")
         if mode == "hybrid":
-            return self.search_hybrid(query, k=k, prf=prf, exclude=exclude)
-        return HybridResults(results=self._run(mode, query, k, prf=prf), used=[mode])
+            return self.search_hybrid(query, k=k, prf=prf, exclude=exclude, exts=exts)
+        results = self._run(mode, query, k, prf=prf, exts=exts)
+        return HybridResults(results=results, used=[mode])
 
     # -- fused -------------------------------------------------------------
 
@@ -181,6 +205,7 @@ class SearchEngine:
         retrievers: list[str] | None = None,
         prf: bool = False,
         exclude: tuple = (),
+        exts: tuple = (),
     ) -> HybridResults:
         names = retrievers or [r for r in ALL_RETRIEVERS if self._enabled(r)]
         # Left out at the caller's request (e.g. the launcher drops the slow kb backend
@@ -200,7 +225,7 @@ class SearchEngine:
 
         def run(name: str) -> None:
             try:
-                hits_by_name[name] = self._run(name, query, pool, prf=prf)
+                hits_by_name[name] = self._run(name, query, pool, prf=prf, exts=exts)
             except FileNotFoundError as exc:
                 out.skipped[name] = str(exc)
             except Exception as exc:  # one backend failing shouldn't sink the query
@@ -254,7 +279,12 @@ class SearchEngine:
 
 
 def search_across(
-    engines: list[SearchEngine], mode: str, query: str, k: int = 10, exclude: tuple = ()
+    engines: list[SearchEngine],
+    mode: str,
+    query: str,
+    k: int = 10,
+    exclude: tuple = (),
+    exts: tuple = (),
 ) -> HybridResults:
     """One search over several indexed directories, ranked as a single collection.
 
@@ -268,7 +298,7 @@ def search_across(
     if mode not in MODES:
         raise ValueError(f"unknown mode: {mode}")
     if len(engines) == 1:
-        return engines[0].search(mode, query, k=k, exclude=exclude)
+        return engines[0].search(mode, query, k=k, exclude=exclude, exts=exts)
     hybrid = mode == "hybrid"
     names = [r for r in ALL_RETRIEVERS if r not in exclude] if hybrid else [mode]
     pool = max(k, _POOL_MIN) if hybrid else k
@@ -282,13 +312,13 @@ def search_across(
         lists: list[list[Result]] = []
         if name == "sparse" and members:
             try:
-                lists.append(_sparse_across(members, query, pool))
+                lists.append(_sparse_across(members, query, pool, exts))
             except Exception as exc:
                 failures[name] = exc
         else:
             for engine in members:
                 try:
-                    lists.append(engine._run(name, query, pool))
+                    lists.append(engine._run(name, query, pool, exts=exts))
                 except Exception as exc:  # one directory failing shouldn't sink the rest
                     failures.setdefault(name, exc)
         if lists:
@@ -310,11 +340,13 @@ def search_across(
     return out
 
 
-def _sparse_across(engines: list[SearchEngine], query: str, k: int) -> list[Result]:
+def _sparse_across(
+    engines: list[SearchEngine], query: str, k: int, exts: tuple = ()
+) -> list[Result]:
     from .retrieval.sparse import search_pooled
 
     root_of = {id(engine.sparse): engine.config.target_dir for engine in engines}
-    hits = search_pooled([engine.sparse for engine in engines], query, k)
+    hits = search_pooled([engine.sparse for engine in engines], query, k, exts=exts)
     return [with_file_metadata(result, root_of[id(index)]) for index, result in hits]
 
 

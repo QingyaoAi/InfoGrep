@@ -158,6 +158,11 @@
         <p>Claude Code, Codex, and any MCP-aware agent can call <code>search_hybrid</code> and get back citable <code>path</code>/<code>page</code>/<code>snippet</code>/<code>score</code> results.</p>
       </div>
       <div class="card">
+        <span class="icon">💬</span>
+        <h3>Ask, not just search</h3>
+        <p>With <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> installed, press <b>Tab</b> in the launcher and ask a question: an agent searches and reads your files, then answers with its sources. On demand and read-only; the passages it reads go to the model that answers.</p>
+      </div>
+      <div class="card">
         <span class="icon">🔒</span>
         <h3>Local-first, non-destructive</h3>
         <p>Everything runs on your machine. The index lives in a side-car location — your files and folder structure are never touched.</p>
@@ -214,7 +219,7 @@
     <div class="codepanel">
       <div class="tabs" role="tablist">
         <div class="tab active" data-tab="cli">CLI</div>
-        <div class="tab" data-tab="mcp">MCP (Claude Code / Codex)</div>
+        <div class="tab" data-tab="mcp">MCP (Claude Code / Codex / dsh)</div>
         <div class="tab" data-tab="web">Browser UI</div>
         <div class="tab" data-tab="config">config.toml</div>
       </div>
@@ -223,6 +228,7 @@
 <pre>infogrep index &lt;dir&gt;                 # build / update the index for a directory
 infogrep search &lt;query&gt; -d &lt;dir&gt;     # query (modes: hybrid [default] | sparse | dense | kb | graph)
 infogrep search &lt;query&gt; --prf        # sparse query expansion (RM3)
+infogrep ask "&lt;question&gt;"            # a DeepSeek Harness agent answers from your files
 infogrep status &lt;dir&gt;                # index status + staleness (pending changes)
 infogrep mcp --dir &lt;dir&gt;             # run the MCP server (stdio) for coding agents
 infogrep serve --dir &lt;dir&gt;           # browser UI to test search (http://127.0.0.1:7421)
@@ -231,10 +237,11 @@ infogrep schedule install &lt;dir&gt; --at 03:00   # daily auto-reindex via laun
 
       <div class="tabpage" id="mcp">
 <pre>claude mcp add infogrep -- uv run infogrep mcp --dir /path/to/your/project
+infogrep dsh install --dir /path/to/your/project     # DeepSeek Harness (dsh web)
 
 # Tools exposed:
 #   search_sparse · search_dense · search_kb · search_graph
-#   search_hybrid · index_status · reindex
+#   search_hybrid · read_file · kb_learn · index_status · reindex
 #
 # Each result carries: path, page, snippet, score, retriever
 # search_hybrid fuses enabled retrievers with reciprocal rank fusion
@@ -244,7 +251,7 @@ infogrep schedule install &lt;dir&gt; --at 03:00   # daily auto-reindex via laun
       <div class="tabpage" id="web">
 <pre>infogrep serve --dir &lt;dir&gt;    # http://127.0.0.1:7421 by default
 
-# Search box · mode selector (hybrid/sparse/dense/kb/graph)
+# Search box · mode selector (hybrid/sparse/dense/kb/graph, + Ask with dsh)
 # result snippets with path/page/score · add/switch folders
 # JSON API: /api/search  /api/status   (bound to localhost)</pre>
       </div>
@@ -281,8 +288,9 @@ ocr = false             # OCR scanned PDF pages (needs tesseract)</pre>
     <div class="section-head" style="margin-bottom:28px;">
       <div class="eyebrow">Ready?</div>
       <h2>Point it at a folder and start searching</h2>
-      <p>Clone the repo, run the installer for a Spotlight-style menu-bar app, or wire the
-        MCP server straight into your coding agent.</p>
+      <p>Download the standalone macOS app, <code>pip install infogrep</code>, or clone the
+        repo and run the installer — then wire the MCP server into your coding agent, or add
+        DeepSeek Harness and ask questions. The README has each route step by step.</p>
     </div>
     <div class="hero-ctas">
       <a class="btn btn-primary" href="https://github.com/QingyaoAi/InfoGrep">View on GitHub</a>

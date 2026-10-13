@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from ..config import Config
-from .base import Result
+from .base import Result, file_ext
 
 if TYPE_CHECKING:
     from .embedders.cache import EmbeddingCache
@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 _VECTOR_FIELD = "embedding"
 _BUILD_BATCH = 128
 _SNIPPET_CHARS = 240
+_FILTER_DEPTH = 40  # candidates fetched per wanted result under a file-type filter...
+_FILTER_MAX = 2000  # ...up to this many
 
 DENSE_EXTRA_HINT = (
     "dense search needs the optional 'dense' dependencies. Install with "
@@ -191,7 +193,7 @@ class DenseIndex:
 
     # -- search ------------------------------------------------------------
 
-    def search(self, query: str, k: int = 10) -> list[Result]:
+    def search(self, query: str, k: int = 10, exts: tuple = ()) -> list[Result]:
         zvec = _import_zvec()
 
         if not self._exists():
@@ -202,7 +204,10 @@ class DenseIndex:
 
         qvec = self.embedder.embed([query], is_query=True)[0]
         collection = zvec.open(path=str(self.dense_dir))
-        hits = collection.query(zvec.Query(_VECTOR_FIELD, vector=qvec.tolist()), topk=k)
+        # The vector store knows nothing about file types, so a type filter is applied
+        # to a deeper candidate list (a flat index: depth costs little).
+        topk = min(k * _FILTER_DEPTH, _FILTER_MAX) if exts else k
+        hits = collection.query(zvec.Query(_VECTOR_FIELD, vector=qvec.tolist()), topk=topk)
 
         ids = [_hit_id(h) for h in hits]
         meta = self._lookup_metadata(ids)
@@ -210,7 +215,7 @@ class DenseIndex:
         for hit in hits:
             pid = _hit_id(hit)
             row = meta.get(pid)
-            if row is None:
+            if row is None or (exts and file_ext(row["path"]) not in exts):
                 continue
             text = row["text"]
             results.append(
@@ -227,7 +232,7 @@ class DenseIndex:
                     offset=row["offset"],
                 )
             )
-        return results
+        return results[:k]
 
     def _lookup_metadata(self, ids: list[str]) -> dict:
         from ..manifest import Manifest

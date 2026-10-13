@@ -11,4 +11,7 @@ import pytest
 def isolated_index_home(tmp_path_factory, monkeypatch):
     home = tmp_path_factory.mktemp("infogrep_home")
     monkeypatch.setenv("INFOGREP_HOME", str(home))
+    # Searches stay in the test process: an `infogrep serve` that happens to be running
+    # on this machine reads the real indexes, not the test's.
+    monkeypatch.setenv("INFOGREP_SERVER", "")
     return home

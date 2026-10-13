@@ -39,6 +39,14 @@ def index_dir_for(target_dir: Path) -> Path:
     return index_home() / "indexes" / f"{name}-{digest}"
 
 
+def indexed_dirs() -> list[Path]:
+    """Every directory that has an index under ``$INFOGREP_HOME``, in a stable order."""
+    root = index_home() / "indexes"
+    if not root.is_dir():
+        return []
+    return [Path(src.read_text().strip()) for src in sorted(root.glob("*/source.txt"))]
+
+
 @dataclass
 class ChunkConfig:
     """How long documents are split into passages."""

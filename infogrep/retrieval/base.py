@@ -53,6 +53,11 @@ class Result:
         }
 
 
+def file_ext(path: str) -> str | None:
+    """Lower-cased extension of ``path`` without the dot (None when it has none)."""
+    return os.path.splitext(os.path.basename(path))[1].lstrip(".").lower() or None
+
+
 def with_file_metadata(result: Result, root: os.PathLike | str | None) -> Result:
     """Return a copy of ``result`` enriched with the original file path + metadata.
 
@@ -61,7 +66,7 @@ def with_file_metadata(result: Result, root: os.PathLike | str | None) -> Result
     absolute path and size/mtime are added when ``root`` is given and the file exists.
     """
     filename = os.path.basename(result.path)
-    ext = (os.path.splitext(filename)[1].lstrip(".").lower() or None)
+    ext = file_ext(filename)
     abs_path = size = mtime = None
     if root is not None:
         abs_path = os.path.join(str(root), result.path)
@@ -81,6 +86,10 @@ class Retriever(Protocol):
 
     name: str
 
-    def search(self, query: str, k: int = 10) -> list[Result]:
-        """Return up to ``k`` results for ``query``, ranked best-first."""
+    def search(self, query: str, k: int = 10, exts: tuple = ()) -> list[Result]:
+        """Return up to ``k`` results for ``query``, ranked best-first.
+
+        ``exts`` (lower-case extensions, no dot) restricts the results to files of
+        those types: the best ``k`` among them, not a filtered-down unrestricted ``k``.
+        """
         ...

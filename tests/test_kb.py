@@ -119,9 +119,22 @@ def _first_call_hangs(monkeypatch):
 def test_unanswered_read_is_given_up_on_quickly_and_retried(tmp_path, monkeypatch):
     calls = _first_call_hangs(monkeypatch)
     kb = KnowledgeBaseIndex(_cfg(tmp_path))
+    assert kb._neighbors("X.md") == {"A.md"}
+    # links (lost, then asked again), backlinks: per-note lookups answer in
+    # milliseconds or never, so they get seconds, not the 30 s a write is allowed.
+    assert [(args[1], timeout) for args, timeout in calls] == [
+        ("links", 2.0), ("links", 2.0), ("backlinks", 2.0),
+    ]
+
+
+def test_unanswered_search_is_retried_but_given_time(tmp_path, monkeypatch):
+    # The vault search is legitimately slow for common words (seconds), so it is
+    # allowed far longer than a lookup before being written off as lost.
+    calls = _first_call_hangs(monkeypatch)
+    kb = KnowledgeBaseIndex(_cfg(tmp_path))
     assert kb._search("anything") == ["A.md"]
-    assert len(calls) == 2
-    assert all(timeout <= 5 for _, timeout in calls)  # not the 30 s a write is allowed
+    assert [args[1] for args, _ in calls] == ["search", "search"]
+    assert all(10 <= timeout < 30 for _, timeout in calls)
 
 
 def test_unanswered_write_is_not_repeated(tmp_path, monkeypatch):
@@ -182,6 +195,14 @@ def test_hybrid_exclude_never_calls_kb(tmp_path):
     assert out.used == ["graph"]
     assert out.skipped == {}  # left out on request, not a backend that failed
     assert fake.calls == []
+
+
+def test_type_filter_skips_the_vault_unless_markdown_is_wanted(tmp_path):
+    fake = FakeObsidian(search=["Note.md"], contents={"Note.md": "hello world"})
+    kb = KnowledgeBaseIndex(_cfg(tmp_path, hops=0), runner=fake)
+    assert kb.search("hello", k=3, exts=("pdf",)) == []
+    assert fake.calls == []  # notes are Markdown: nothing to ask Obsidian for
+    assert [h.path for h in kb.search("hello", k=3, exts=("txt", "md"))] == ["Note.md"]
 
 
 # -- guarded integration test against the real Obsidian CLI -----------------

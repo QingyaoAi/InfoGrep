@@ -23,7 +23,7 @@ import threading
 from collections.abc import Iterable
 from pathlib import Path
 
-from .base import Result
+from .base import Result, file_ext
 
 _SNIPPET_CHARS = 240
 
@@ -307,14 +307,7 @@ class SparseIndex:
 
     def _fields_map(self):
         """java.util.HashMap<String,Float> of field -> boost for multi-field search."""
-        from ..anserini import autoclass
-
-        HashMap = autoclass("java.util.HashMap")
-        Float = autoclass("java.lang.Float")
-        m = HashMap()
-        for field, boost in self.field_boosts.items():
-            m.put(field, Float(float(boost)))
-        return m
+        return _java_boosts(self.field_boosts)
 
     def _index_reader(self):
         with self._searcher_lock:
@@ -392,7 +385,9 @@ class SparseIndex:
         scored.sort(key=lambda kv: -kv[1])
         return [t for t, _ in scored[: self.prf_fb_terms]]
 
-    def search(self, query: str, k: int = 10, prf: bool = False) -> list[Result]:
+    def search(
+        self, query: str, k: int = 10, prf: bool = False, exts: tuple = ()
+    ) -> list[Result]:
         searcher = self._ensure_searcher()
 
         effective_query = query
@@ -406,10 +401,24 @@ class SparseIndex:
                 # overriding it; keeps strong filename/exact matches on top.
                 effective_query = " ".join([query] * _PRF_ORIGINAL_WEIGHT + expansion)
 
+        if exts:  # SimpleSearcher takes no filter; the pooled path builds its own query
+            return [r for _, r in search_pooled([self], effective_query, k, exts=exts)]
         # Multi-field BM25 over contents + filename + path (boosted), so queries can
         # match the file name / path, not only the passage text.
         hits = searcher.search_fields(effective_query, self._fields_map(), k)
         return [_result(hit.lucene_document.get("raw"), hit.docid, hit.score) for hit in hits]
+
+
+def _java_boosts(boosts: dict):
+    """java.util.HashMap<String,Float> of field -> boost."""
+    from ..anserini import autoclass
+
+    HashMap = autoclass("java.util.HashMap")
+    Float = autoclass("java.lang.Float")
+    m = HashMap()
+    for field, boost in boosts.items():
+        m.put(field, Float(float(boost)))
+    return m
 
 
 def _result(raw_json: str, docid: str, score: float) -> Result:
@@ -428,7 +437,7 @@ def _result(raw_json: str, docid: str, score: float) -> Result:
 
 
 def search_pooled(
-    indexes: list[SparseIndex], query: str, k: int = 10
+    indexes: list[SparseIndex], query: str, k: int = 10, exts: tuple = ()
 ) -> list[tuple[SparseIndex, Result]]:
     """BM25 over several indexes, scored as if they were one collection.
 
@@ -438,6 +447,10 @@ def search_pooled(
     A Lucene ``MultiReader`` shares the statistics across all of them instead. Each hit
     comes back with the index it belongs to (its path is relative to that index's
     directory). Indexes without a built index are left out.
+
+    ``exts`` keeps only files with those extensions. The restriction is part of the
+    Lucene query, so the result is the best ``k`` of those types however deep they sit
+    in the unrestricted ranking.
     """
     indexes = [index for index in indexes if any(index.index_dir.glob("segments*"))]
     if not indexes:
@@ -447,6 +460,8 @@ def search_pooled(
     MultiReader = autoclass("org.apache.lucene.index.MultiReader")
     IndexSearcher = autoclass("org.apache.lucene.search.IndexSearcher")
     QueryGenerator = autoclass("io.anserini.search.query.BagOfWordsQueryGenerator")
+    BooleanQuery = autoclass("org.apache.lucene.search.BooleanQuery$Builder")
+    Occur = autoclass("org.apache.lucene.search.BooleanClause$Occur")
 
     # One analyzed query can only serve indexes built with the same analyzer and field
     # weights. Indexes that differ are searched as separate pools and merged by score,
@@ -470,10 +485,32 @@ def search_pooled(
         )
         searcher.setSimilarity(simple.get_similarity())
         lucene_query = QueryGenerator().buildQuery(first._fields_map(), first._analyzer, query)
+        if exts:
+            # A file's extension is a token of its (tokenized) filename field, so that
+            # field narrows the search without a schema change. Any other word of the
+            # name can equal it too ("pdf-export.txt"), hence the exact check below;
+            # it filters without scoring, leaving the ranking scores untouched.
+            of_type = QueryGenerator().buildQuery(
+                _java_boosts({"filename": 1.0}), first._analyzer, " ".join(exts)
+            )
+            lucene_query = (
+                BooleanQuery().add(lucene_query, Occur.MUST).add(of_type, Occur.FILTER).build()
+            )
         stored = searcher.storedFields()
-        for scored in searcher.search(lucene_query, k).scoreDocs:
-            doc = stored.document(scored.doc)
-            owner = members[bisect.bisect_right(starts, scored.doc) - 1]
-            hits.append((owner, _result(doc.get("raw"), doc.get("id"), scored.score)))
+        n = k
+        while True:
+            scored = searcher.search(lucene_query, n).scoreDocs
+            found = []
+            for hit in scored:
+                doc = stored.document(hit.doc)
+                result = _result(doc.get("raw"), doc.get("id"), hit.score)
+                if exts and file_ext(result.path) not in exts:
+                    continue
+                owner = members[bisect.bisect_right(starts, hit.doc) - 1]
+                found.append((owner, result))
+            if len(found) >= k or len(scored) < n:
+                break
+            n *= 4  # the exact check dropped some: dig deeper for replacements
+        hits.extend(found[:k])
     hits.sort(key=lambda hit: hit[1].score, reverse=True)
     return hits[:k]

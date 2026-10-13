@@ -10,7 +10,22 @@ hotkey, type, and open the matching file.
   (it never opens a result left over from an earlier query).
 - **Notes** checkbox (shown for folders with an Obsidian knowledge base configured): also
   search the vault. Off by default — that part answers through the Obsidian app and is
-  much slower than the local index.
+  much slower than the local index. It applies to questions too (see **Ask** below): the
+  agent leaves the vault alone unless the box is ticked when you send the question.
+- **File-type bar** above the results (All · PDF · Word · Slides · Sheets · Text · Images ·
+  JSON): show only that kind of file — the best matches of that type, not a filtered-down
+  top 25. Each result leads with a Quick Look thumbnail of the file itself (first page,
+  picture, first slide) and carries a small tag naming its type, coloured by kind.
+- **Ask** button next to the search field, or **Tab**: switch the panel from searching to
+  asking, and back. In Ask mode **↵** sends what you typed as a question to a
+  [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent, which searches
+  and reads your files and answers in the panel, with the files it used listed underneath
+  (click one to reveal it in Finder). **⇧↵** asks a follow-up in the same conversation,
+  **↑ / ↓** scroll the answer. The question covers the folders the search would. You can
+  dismiss the panel while it works; the answer is there when you bring it back. The button
+  only appears when `dsh` is installed — the top-level README has the steps
+  ([Set up question answering](../README.md#set-up-question-answering-deepseek-harness)),
+  what to do when the button is missing, and what a question runs and leaves on disk.
 - Menu-bar 🔎 icon → Search… / Quit
 
 ## Download & run (standalone app)

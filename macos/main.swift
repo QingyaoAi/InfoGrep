@@ -3,6 +3,9 @@
 // A menu-bar (agent) app: press the global hotkey (default ⌘⇧-Space) to pop a search
 // panel, type to search the local InfoGrep web API, ↑/↓ to navigate, ↵ to reveal the
 // file in Finder, Esc to dismiss. The backend is `infogrep serve` (http://127.0.0.1:7421).
+// The Ask button (or Tab) turns the panel from searching to asking: ↵ then sends the
+// text as a question to a DeepSeek Harness agent on the server, and the answer shows
+// where the results were.
 //
 // Standalone builds (build.sh --standalone) ship the backend inside the app bundle
 // (Resources/python + backend + jre); if nothing answers on the port at launch, the
@@ -11,11 +14,96 @@
 
 import AppKit
 import Carbon.HIToolbox
+import QuickLookThumbnailing
+import UniformTypeIdentifiers
 
 let kPort = "7421"
 let kAPIBase = "http://127.0.0.1:\(kPort)"
 let kSearchMode = "hybrid"
 let kMaxResults = 25
+let kFilterBarHeight: CGFloat = 32  // strip between the search field and the results
+
+// One colour per kind of file (keyed by the server's file-type ids), for the tag that
+// names a result's type. System colours, so they follow the appearance.
+let kTypeColors: [String: NSColor] = [
+    "pdf": .systemRed, "doc": .systemBlue, "slides": .systemOrange, "sheet": .systemGreen,
+    "text": .systemGray, "image": .systemPurple, "data": .systemTeal,
+]
+let kIconSide: CGFloat = 44  // the box a row's thumbnail is fitted into
+let kThumbnailsKept = 400  // most recent thumbnails held in memory (~12 MB at ~30 KB each)
+
+/// The small capsule that names a result's file type: "PDF", "DOCX", … in its colour.
+func typeTag(ext: String, color: NSColor) -> NSImage {
+    let label = ext.uppercased() as NSString
+    let attrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
+        .foregroundColor: color,
+    ]
+    let text = label.size(withAttributes: attrs)
+    return NSImage(size: NSSize(width: ceil(text.width) + 14, height: 18), flipped: false) { rect in
+        color.withAlphaComponent(0.2).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 9, yRadius: 9).fill()
+        label.draw(at: NSPoint(x: 7, y: (rect.height - text.height) / 2), withAttributes: attrs)
+        return true
+    }
+}
+
+/// A thumbnail straight from the image decoder. Quick Look now and then refuses a
+/// picture it ought to manage (seen with an ordinary 300x167 PNG); ImageIO still reads it.
+func imageThumbnail(_ path: String, pixels: CGFloat) -> NSImage? {
+    let options: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,  // honour EXIF rotation
+        kCGImageSourceThumbnailMaxPixelSize: pixels,
+    ]
+    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+          let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    else { return nil }
+    return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+}
+
+/// `image` as a row shows it at its left: fitted to the icon box and drawn, once, into a
+/// bitmap of exactly the pixels displayed (at most 88x88 on a Retina screen, ~30 KB).
+///
+/// Handing an image view the original instead makes Core Animation keep it at full
+/// resolution for as long as it is cached: measured at ~4 MB per Finder icon (they carry
+/// a 1024-pixel version) and ~180 KB per Quick Look thumbnail, which in a launcher that
+/// runs for weeks is most of its memory. `framed` rounds the corners and adds a hairline
+/// edge, so a thumbnail of a white page keeps its outline.
+func rowImage(_ image: NSImage, scale: CGFloat, framed: Bool) -> NSImage {
+    let full = image.size
+    let fit = min(kIconSide / full.width, kIconSide / full.height)
+    let size = NSSize(width: (full.width * fit).rounded(), height: (full.height * fit).rounded())
+    guard let bitmap = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+    else { return image }
+    // Size in points, set before the context is made: that is what makes the context
+    // draw `scale` pixels per point. Set afterwards, a 44-point drawing lands in the
+    // bottom-left quarter of an 88-pixel bitmap.
+    bitmap.size = size
+    guard let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return image }
+    let rect = NSRect(origin: .zero, size: size)
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = context
+    if framed {
+        let edge = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
+        NSGraphicsContext.saveGraphicsState()
+        edge.addClip()
+        image.draw(in: rect)
+        NSGraphicsContext.restoreGraphicsState()
+        NSColor(white: 0.6, alpha: 0.45).setStroke()
+        edge.lineWidth = 1
+        edge.stroke()
+    } else {
+        image.draw(in: rect)
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    let drawn = NSImage(size: size)
+    drawn.addRepresentation(bitmap)
+    return drawn
+}
 
 // Bridge so the C hotkey callback can reach the controller (single, app-lifetime instance).
 nonisolated(unsafe) weak var gController: AppController?
@@ -42,7 +130,8 @@ struct SearchResult {
 // down, backend error), so the panel can say what went wrong instead of showing nothing.
 // `notes` adds the Obsidian knowledge base to the search; it is left out by default
 // because it answers through the Obsidian app, far slower than the local indexes.
-func apiSearch(_ query: String, dir: String?, allFolders: Bool, notes: Bool,
+// `type` (a file-type id from /api/indexes) keeps only files of that kind.
+func apiSearch(_ query: String, dir: String?, allFolders: Bool, notes: Bool, type: String?,
                completion: @escaping ([SearchResult], String?) -> Void) {
     guard var comp = URLComponents(string: "\(kAPIBase)/api/search") else { completion([], nil); return }
     comp.queryItems = [
@@ -56,6 +145,7 @@ func apiSearch(_ query: String, dir: String?, allFolders: Bool, notes: Bool,
         comp.queryItems?.append(URLQueryItem(name: "dir", value: dir))
     }
     if !notes { comp.queryItems?.append(URLQueryItem(name: "exclude", value: "kb")) }
+    if let type { comp.queryItems?.append(URLQueryItem(name: "type", value: type)) }
     guard let url = comp.url else { completion([], nil); return }
     var req = URLRequest(url: url)
     req.timeoutInterval = 30  // first search after a (re)index can be slow to warm up
@@ -86,20 +176,140 @@ func apiSearch(_ query: String, dir: String?, allFolders: Bool, notes: Bool,
     }.resume()
 }
 
+/// What the server reports about a question: how far the agent has got, then its answer.
+struct AskState {
+    let status: String  // "running", then "done" | "error" | "cancelled"
+    let steps: [String]  // the searches and files the agent has turned to so far
+    let answer: String
+    let sources: [String]  // absolute paths of the files the answer relies on
+    let session: String?  // the conversation, to pass back for a follow-up
+    let error: String
+}
+
+// Hands a question to the server's agent and calls back with the id to poll, or with
+// why it couldn't start. `session` continues the conversation an earlier answer came from.
+// As for a search, the knowledge base is only consulted when `notes` asks for it.
+func apiAsk(_ question: String, dir: String?, allFolders: Bool, notes: Bool, session: String?,
+            completion: @escaping (Int?, String?) -> Void) {
+    guard var comp = URLComponents(string: "\(kAPIBase)/api/ask") else { completion(nil, nil); return }
+    comp.queryItems = [URLQueryItem(name: "q", value: question)]
+    if allFolders {
+        comp.queryItems?.append(URLQueryItem(name: "scope", value: "all"))
+    } else if let dir, !dir.isEmpty {
+        comp.queryItems?.append(URLQueryItem(name: "dir", value: dir))
+    }
+    if notes { comp.queryItems?.append(URLQueryItem(name: "notes", value: "1")) }
+    if let session { comp.queryItems?.append(URLQueryItem(name: "session", value: session)) }
+    // URLComponents leaves "+" as it is, and the server reads a bare "+" as a space.
+    comp.percentEncodedQuery = comp.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+    guard let url = comp.url else { completion(nil, nil); return }
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.timeoutInterval = 15
+    URLSession.shared.dataTask(with: req) { data, _, err in
+        var id: Int?
+        var msg: String?
+        if err != nil {
+            msg = "Can't reach InfoGrep — is `infogrep serve` running?"
+        } else if let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            id = obj["id"] as? Int
+            if id == nil { msg = obj["error"] as? String ?? "The server could not take the question" }
+        } else {
+            msg = "Unexpected response from the InfoGrep server"
+        }
+        DispatchQueue.main.async { completion(id, msg) }
+    }.resume()
+}
+
+// Calls back with nil when the server can't be reached.
+func apiAskState(_ id: Int, completion: @escaping (AskState?) -> Void) {
+    guard let url = URL(string: "\(kAPIBase)/api/ask?id=\(id)") else { completion(nil); return }
+    var req = URLRequest(url: url)
+    req.timeoutInterval = 10
+    URLSession.shared.dataTask(with: req) { data, _, _ in
+        var state: AskState?
+        if let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let status = obj["status"] as? String {
+            state = AskState(
+                status: status,
+                steps: obj["steps"] as? [String] ?? [],
+                answer: obj["answer"] as? String ?? "",
+                sources: obj["sources"] as? [String] ?? [],
+                session: obj["session"] as? String,
+                error: obj["error"] as? String ?? "")
+        }
+        DispatchQueue.main.async { completion(state) }
+    }.resume()
+}
+
+/// An answer as the panel shows it: **bold**, *italic*, `code` and links are rendered,
+/// while line breaks and list markers stay exactly as the agent wrote them.
+func answerText(_ markdown: String, size: CGFloat) -> NSAttributedString {
+    let base = NSFont.systemFont(ofSize: size)
+    let plain: [NSAttributedString.Key: Any] = [.font: base, .foregroundColor: NSColor.labelColor]
+    guard let parsed = try? AttributedString(
+        markdown: markdown,
+        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
+    else { return NSAttributedString(string: markdown, attributes: plain) }
+    let out = NSMutableAttributedString()
+    for run in parsed.runs {
+        var attrs = plain
+        let intent = run.inlinePresentationIntent ?? []
+        if intent.contains(.code) {
+            attrs[.font] = NSFont.monospacedSystemFont(ofSize: size - 1, weight: .regular)
+        } else {
+            var traits: NSFontDescriptor.SymbolicTraits = []
+            if intent.contains(.stronglyEmphasized) { traits.insert(.bold) }
+            if intent.contains(.emphasized) { traits.insert(.italic) }
+            if !traits.isEmpty {
+                attrs[.font] = NSFont(descriptor: base.fontDescriptor.withSymbolicTraits(traits),
+                                      size: size) ?? base
+            }
+        }
+        if let link = run.link { attrs[.link] = link }
+        out.append(NSAttributedString(string: String(parsed[run.range].characters), attributes: attrs))
+    }
+    return out
+}
+
+/// The answer area. Selecting text in it takes the keyboard focus, but whatever is
+/// typed next is still meant for the question field — as are Tab, ↵ and Esc.
+final class AnswerTextView: NSTextView {
+    weak var typingTarget: NSTextField?
+
+    // Blended into the panel's blur, as the labels of the result list are. A text view
+    // is by default laid flat over it instead, which leaves its text duller and thinner
+    // than theirs — coloured text, the links, most of all.
+    override var allowsVibrancy: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        guard let field = typingTarget, let window, window.makeFirstResponder(field),
+              let editor = field.currentEditor()
+        else { super.keyDown(with: event); return }
+        editor.keyDown(with: event)
+    }
+}
+
 struct IndexEntry { let name: String; let dir: String; let indexed: Bool
                     let indexing: Bool; let scheduled: Bool
                     let kb: Bool }  // an Obsidian knowledge base is configured for it
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
-                          NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
+                          NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate,
+                          NSTextViewDelegate {
     var statusItem: NSStatusItem!
     var panel: NSPanel!
     var field: NSTextField!
     var spinner: NSProgressIndicator!
     var notesToggle: NSButton!
+    var askButton: NSButton!
+    var typeBar: NSSegmentedControl!
     var statusLabel: NSTextField!
     var table: NSTableView!
+    var resultsScroll: NSScrollView!
+    var answerScroll: NSScrollView!
+    var answerView: AnswerTextView!
     var results: [SearchResult] = []
     var hotKeyRef: EventHotKeyRef?
     var seq = 0
@@ -112,20 +322,38 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     var searchAll = UserDefaults.standard.object(forKey: "infogrep.searchAll") as? Bool ?? true
     // "All" only differs from the one folder there is once a second one exists.
     var searchingAll: Bool { searchAll && indexes.count > 1 }
+    // File-type filter: the kinds the server offers, and the one picked (nil = any).
+    var fileTypes: [(id: String, label: String, exts: [String])] = []
+    var selectedType: String?
+    // Ask mode: ↵ sends the field's text to a DeepSeek Harness agent as a question
+    // instead of searching for it. Search is the mode at every launch.
+    var askMode = false
+    var askAvailable = false  // the server has `dsh` to answer with (see /api/indexes)
+    var asking = false  // a question is with the agent
+    var askSeq = 0  // one per question, so word of an earlier one is ignored
+    var askSession: String?  // the conversation the answer on screen belongs to
+    var askShown = ""  // what the answer area was last drawn from
+    var iconCache: [String: NSImage] = [:]  // Finder's icon per file extension
+    var tagCache: [String: NSImage] = [:]  // the type tag per file extension
+    let thumbnails = NSCache<NSString, NSImage>()  // framed Quick Look thumbnail per file
 
     func currentFolderName() -> String {
         if searchingAll { return "all folders" }
         if let d = selectedDir, !d.isEmpty { return (d as NSString).lastPathComponent }
         return "InfoGrep"
     }
-    func updatePlaceholder() { field?.placeholderString = "Search \(currentFolderName())…" }
-    // The Notes checkbox only means something where a knowledge base is configured.
+    func updatePlaceholder() {
+        field?.placeholderString = "\(askMode ? "Ask about" : "Search") \(currentFolderName())…"
+    }
+    // The Notes checkbox only means something where a knowledge base is configured. It
+    // works the same in both modes: unticked, neither a search nor a question touches it.
     func updateNotesToggle() {
         let searched = searchingAll ? indexes : indexes.filter { $0.dir == selectedDir }
         notesToggle?.isHidden = !searched.contains(where: { $0.kb })
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        thumbnails.countLimit = kThumbnailsKept
         setupMainMenu()
         setupStatusItem()
         setupPanel()
@@ -306,9 +534,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         guard let url = URL(string: "\(kAPIBase)/api/indexes") else { return }
         URLSession.shared.dataTask(with: url) { data, _, _ in
             var list: [IndexEntry] = []
+            var types: [(id: String, label: String, exts: [String])] = []
             var defaultDir: String?
+            var canAsk = false
             if let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 defaultDir = obj["default"] as? String
+                canAsk = obj["ask"] as? Bool ?? false
+                for t in (obj["types"] as? [[String: Any]]) ?? [] {
+                    if let id = t["id"] as? String, let label = t["label"] as? String {
+                        types.append((id: id, label: label, exts: (t["exts"] as? [String]) ?? []))
+                    }
+                }
                 if let arr = obj["indexes"] as? [[String: Any]] {
                     for i in arr where (i["dir"] as? String) != nil {
                         let dir = i["dir"] as! String
@@ -324,6 +560,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
             }
             DispatchQueue.main.async {
                 self.indexes = list
+                self.setFileTypes(types)
+                self.setAskAvailable(canAsk)
                 // Searching a folder without an index silently returns nothing, so if
                 // the remembered selection isn't searchable (gone, or never indexed and
                 // not being built), fall back to the server default or any indexed folder.
@@ -449,7 +687,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         // the Obsidian app, which is what makes a search slow. Hidden until the selected
         // folder is known to have a knowledge base (see updateNotesToggle).
         notesToggle = NSButton(checkboxWithTitle: "Notes", target: self,
-                               action: #selector(notesToggled))
+                               action: #selector(filtersChanged))
         notesToggle.frame = NSRect(x: w - 110, y: h - 46, width: 66, height: 20)
         notesToggle.controlSize = .small
         notesToggle.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -459,12 +697,45 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         notesToggle.isHidden = true
         blur.addSubview(notesToggle)
 
+        // Turns the panel from searching to asking, and back (Tab does the same from the
+        // keyboard). Hidden until the server says it has dsh to answer with.
+        askButton = NSButton(title: "Ask", target: self, action: #selector(toggleAskMode))
+        askButton.isBordered = false  // it draws its own two states (styleAskButton)
+        askButton.wantsLayer = true
+        askButton.layer?.cornerRadius = 6
+        askButton.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
+        askButton.imagePosition = .imageLeading
+        askButton.imageHugsTitle = true
+        askButton.toolTip = "Ask a question about your files; a DeepSeek Harness agent answers it (Tab)"
+        askButton.refusesFirstResponder = true  // typing stays in the search field
+        askButton.autoresizingMask = [.minXMargin, .minYMargin]
+        styleAskButton()
+        askButton.sizeToFit()
+        askButton.setFrameSize(NSSize(width: askButton.frame.width + 16, height: 22))
+        askButton.isHidden = true
+        blur.addSubview(askButton)
+
         let sep = NSBox(frame: NSRect(x: 0, y: h - 64, width: w, height: 1))
         sep.boxType = .separator
         sep.autoresizingMask = [.width, .minYMargin]
         blur.addSubview(sep)
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: w, height: h - 64))
+        // Filter bar: narrow the list to one kind of file. Starts with "All" alone and
+        // gains the server's file types once they are known (setFileTypes).
+        typeBar = NSSegmentedControl(labels: ["All"], trackingMode: .selectOne,
+                                     target: self, action: #selector(typeChanged))
+        typeBar.controlSize = .small
+        typeBar.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        typeBar.selectedSegment = 0
+        typeBar.refusesFirstResponder = true  // typing stays in the search field
+        typeBar.autoresizingMask = [.maxXMargin, .minYMargin]
+        typeBar.sizeToFit()
+        typeBar.setFrameOrigin(NSPoint(x: 14, y: h - 64 - kFilterBarHeight + 5))
+        blur.addSubview(typeBar)
+
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: w,
+                                                height: h - 64 - kFilterBarHeight))
+        resultsScroll = scroll
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.autoresizingMask = [.width, .height]
@@ -484,10 +755,33 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         scroll.documentView = table
         blur.addSubview(scroll)
 
+        // Ask mode shows this where the results (and the filter bar) were: the agent's
+        // steps as it works, then its answer and the files it came from.
+        answerScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: w, height: h - 65))
+        answerScroll.hasVerticalScroller = true
+        answerScroll.drawsBackground = false
+        answerScroll.autoresizingMask = [.width, .height]
+        answerView = AnswerTextView(frame: NSRect(x: 0, y: 0, width: w, height: h - 65))
+        answerView.typingTarget = field
+        answerView.isEditable = false
+        answerView.isSelectable = true  // so an answer can be copied
+        answerView.drawsBackground = false
+        answerView.textContainerInset = NSSize(width: 12, height: 12)
+        answerView.isVerticallyResizable = true
+        answerView.autoresizingMask = [.width]
+        answerView.textContainer?.widthTracksTextView = true
+        answerView.linkTextAttributes = [.foregroundColor: NSColor.linkColor,
+                                         .underlineStyle: NSUnderlineStyle.single.rawValue,
+                                         .cursor: NSCursor.pointingHand]
+        answerView.delegate = self
+        answerScroll.documentView = answerView
+        answerScroll.isHidden = true
+        blur.addSubview(answerScroll)
+
         // Feedback line under the search field: "searching", errors and "no results"
         // (hidden otherwise).
         statusLabel = NSTextField(labelWithString: "")
-        statusLabel.frame = NSRect(x: 16, y: h - 100, width: w - 32, height: 20)
+        statusLabel.frame = NSRect(x: 16, y: h - 100 - kFilterBarHeight, width: w - 32, height: 20)
         statusLabel.font = NSFont.systemFont(ofSize: 13)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.alignment = .center
@@ -495,6 +789,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         statusLabel.autoresizingMask = [.width, .minYMargin]
         statusLabel.isHidden = true
         blur.addSubview(statusLabel)
+        layoutTopBar()
+    }
+
+    // What sits right of the search field: Notes, Ask, then the spinner at the edge.
+    // Ask takes up room only once it is on offer, and the field gets what is left.
+    func layoutTopBar() {
+        guard let content = panel.contentView else { return }
+        let w = content.bounds.width, h = content.bounds.height
+        var x = w - 44  // the spinner keeps the corner
+        if askAvailable {
+            x -= askButton.frame.width
+            askButton.setFrameOrigin(NSPoint(x: x, y: h - 36 - askButton.frame.height / 2))
+            x -= 8
+        }
+        x -= 66
+        notesToggle.frame = NSRect(x: x, y: h - 46, width: 66, height: 20)
+        field.frame = NSRect(x: 16, y: h - 56, width: x - 26, height: 40)
     }
 
     func showStatus(_ message: String?) {
@@ -502,11 +813,79 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         statusLabel.isHidden = (message == nil)
     }
 
+    func setFileTypes(_ types: [(id: String, label: String, exts: [String])]) {
+        guard types.map({ $0.id }) != fileTypes.map({ $0.id }) else { return }
+        fileTypes = types
+        tagCache.removeAll()  // a tag takes its colour from the type its extension is in
+        table.reloadData()
+        if !types.contains(where: { $0.id == selectedType }) { selectedType = nil }
+        typeBar.segmentCount = types.count + 1
+        typeBar.setLabel("All", forSegment: 0)
+        for (i, t) in types.enumerated() { typeBar.setLabel(t.label, forSegment: i + 1) }
+        typeBar.selectedSegment = (types.firstIndex(where: { $0.id == selectedType }) ?? -1) + 1
+        typeBar.sizeToFit()
+    }
+
+    @objc func typeChanged() {
+        let i = typeBar.selectedSegment
+        selectedType = (i >= 1 && i <= fileTypes.count) ? fileTypes[i - 1].id : nil
+        filtersChanged()
+    }
+
+    // Finder's icon for a file type: what a row shows until its thumbnail is ready, and
+    // all it shows for a result with no file to preview (a note from the knowledge base).
+    func icon(forExtension ext: String) -> NSImage {
+        if let cached = iconCache[ext] { return cached }
+        let image = rowImage(NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data),
+                             scale: panel.backingScaleFactor, framed: false)
+        iconCache[ext] = image
+        return image
+    }
+
+    func tag(forExtension ext: String) -> NSImage {
+        if let cached = tagCache[ext] { return cached }
+        let kind = fileTypes.first(where: { $0.exts.contains(ext) })?.id ?? ""
+        let image = typeTag(ext: ext, color: kTypeColors[kind] ?? .systemGray)
+        tagCache[ext] = image
+        return image
+    }
+
+    // A row leads with the file's own content as Quick Look renders it: the first page,
+    // the picture, the first slide. Generating one takes a moment, so it arrives after
+    // the row is on screen (the type icon stands in), and is kept for the next search.
+    func loadThumbnail(for result: SearchResult, into view: NSImageView) {
+        guard let path = result.absPath else { return }
+        if let ready = thumbnails.object(forKey: path as NSString) {
+            view.image = ready
+            return
+        }
+        let scale = panel.backingScaleFactor
+        let request = QLThumbnailGenerator.Request(
+            fileAt: URL(fileURLWithPath: path), size: CGSize(width: kIconSide, height: kIconSide),
+            scale: scale, representationTypes: .thumbnail)
+        QLThumbnailGenerator.shared.generateBestRepresentation(for: request) {
+            [weak self, weak view] representation, _ in
+            guard let image = representation?.nsImage
+                    ?? imageThumbnail(path, pixels: kIconSide * scale)
+            else { return }  // nothing to preview (or the file is gone): the icon stays
+            DispatchQueue.main.async {
+                let shown = rowImage(image, scale: scale, framed: true)
+                self?.thumbnails.setObject(shown, forKey: path as NSString)
+                view?.image = shown
+            }
+        }
+    }
+
     func setLoading(_ on: Bool) {
         loading = on
-        if on {
+        updateSpinner()
+        if on && results.isEmpty && !askMode { showStatus("Searching…") }
+    }
+
+    // One spinner for both modes: a search on its way, or a question with the agent.
+    func updateSpinner() {
+        if askMode ? asking : loading {
             spinner.startAnimation(nil)
-            if results.isEmpty { showStatus("Searching…") }
         } else {
             spinner.stopAnimation(nil)
         }
@@ -539,6 +918,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         panel.makeKeyAndOrderFront(nil)
         updatePlaceholder()
         updateNotesToggle()
+        styleAskButton()  // its colours are fixed when drawn; the appearance may have changed
         warmBackend()
         // Keep the last query/results so reopening the panel picks up where it left off;
         // select the text so typing immediately replaces it, like Spotlight.
@@ -567,6 +947,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         // While an input method (pinyin, kana, …) is composing, the field holds raw
         // keystrokes rather than the query. Committing the text fires this again.
         if let editor = field.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
+        if askMode { return }  // a question is sent with ↵, not as it is typed
         debounce?.cancel()
         debounce = nil
         seq += 1  // whatever is in flight no longer matches the field
@@ -587,7 +968,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         guard !q.isEmpty else { return }
         let mySeq = seq
         apiSearch(q, dir: selectedDir, allFolders: searchingAll,
-                  notes: notesToggle.state == .on) { [weak self] res, err in
+                  notes: notesToggle.state == .on, type: selectedType) { [weak self] res, err in
             guard let self, mySeq == self.seq else { return }
             self.results = res
             self.table.reloadData()
@@ -596,8 +977,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
                 self.showStatus(err)
                 self.ensureBackend()  // restart the bundled server if it died
             } else if res.isEmpty {
+                let only = self.fileTypes.first(where: { $0.id == self.selectedType })
+                    .map { " (\($0.label) only)" } ?? ""
                 self.showStatus(self.indexes.contains(where: { $0.indexed })
-                    ? "No results in \(self.currentFolderName())"
+                    ? "No results in \(self.currentFolderName())\(only)"
                     : "No indexes yet — choose “Index a Folder…” from the 🔎 menu")
             } else {
                 self.showStatus(nil)
@@ -606,8 +989,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         }
     }
 
-    // The list on screen was fetched with the old setting: search again right away.
-    @objc func notesToggled() {
+    // Notes ticked or a file type picked: the list on screen was fetched with the old
+    // setting, so search again right away.
+    @objc func filtersChanged() {
+        if askMode { return }  // Notes then applies to the next question, sent with ↵
         guard !query().isEmpty else { return }
         seq += 1
         setLoading(true)
@@ -618,7 +1003,173 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     // field. Before that it means "search now": it skips the rest of the typing pause,
     // and never opens a hit left over from an earlier, shorter query.
     func submit() {
-        if debounce != nil { runSearch() } else if !loading { openSelected() }
+        if askMode {
+            // ⇧↵ continues the conversation on screen; plain ↵ starts a new one.
+            ask(followUp: NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false)
+        } else if debounce != nil {
+            runSearch()
+        } else if !loading {
+            openSelected()
+        }
+    }
+
+    // MARK: ask
+    func setAskAvailable(_ available: Bool) {
+        guard available != askAvailable else { return }
+        askAvailable = available
+        askButton.isHidden = !available
+        layoutTopBar()
+        if !available && askMode { setAskMode(false) }
+    }
+
+    @objc func toggleAskMode() { setAskMode(!askMode) }
+
+    // Filled with the accent colour while the panel is asking, a faint outline of a
+    // button while it is searching: the mode has to read at a glance.
+    func styleAskButton() {
+        panel.effectiveAppearance.performAsCurrentDrawingAppearance {
+            let ink: NSColor = askMode ? .white : .secondaryLabelColor
+            let fill: NSColor = askMode ? .controlAccentColor : .labelColor.withAlphaComponent(0.1)
+            askButton.layer?.backgroundColor = fill.cgColor
+            askButton.contentTintColor = ink
+            askButton.attributedTitle = NSAttributedString(string: "Ask", attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium),
+                .foregroundColor: ink,
+            ])
+        }
+    }
+
+    func setAskMode(_ on: Bool) {
+        askMode = on && askAvailable
+        styleAskButton()
+        resultsScroll.isHidden = askMode
+        typeBar.isHidden = askMode
+        answerScroll.isHidden = !askMode
+        updatePlaceholder()
+        updateNotesToggle()
+        debounce?.cancel()
+        debounce = nil
+        seq += 1  // a search still on its way belongs to the mode just left
+        if askMode {
+            loading = false
+            showStatus(nil)
+            if askShown.isEmpty { showAnswer(nil) }
+            updateSpinner()
+        } else if query().isEmpty {
+            results = []; table.reloadData(); setLoading(false); showStatus(nil)
+        } else {
+            setLoading(true)  // the list on screen predates the text in the field
+            runSearch()
+        }
+    }
+
+    func ask(followUp: Bool) {
+        let question = query()
+        guard !question.isEmpty else { return }
+        askSeq += 1
+        let mine = askSeq
+        asking = true
+        updateSpinner()
+        showAnswer(AskState(status: "running", steps: [], answer: "", sources: [],
+                            session: nil, error: ""))
+        apiAsk(question, dir: selectedDir, allFolders: searchingAll,
+               notes: notesToggle.state == .on && !notesToggle.isHidden,
+               session: followUp ? askSession : nil) { [weak self] id, problem in
+            guard let self, mine == self.askSeq else { return }
+            guard let id else {
+                self.askFailed(problem ?? "The question could not be sent")
+                self.ensureBackend()  // restart the bundled server if it died
+                return
+            }
+            self.pollAsk(id, mine)
+        }
+    }
+
+    func pollAsk(_ id: Int, _ mine: Int) {
+        apiAskState(id) { [weak self] state in
+            guard let self, mine == self.askSeq else { return }
+            guard let state else { self.askFailed("Lost contact with InfoGrep"); return }
+            self.showAnswer(state)
+            if state.status == "running" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self, mine == self.askSeq else { return }
+                    self.pollAsk(id, mine)
+                }
+            } else {
+                self.asking = false
+                self.updateSpinner()
+                if state.status == "done" { self.askSession = state.session }
+            }
+        }
+    }
+
+    func askFailed(_ message: String) {
+        asking = false
+        updateSpinner()
+        showAnswer(AskState(status: "error", steps: [], answer: "", sources: [],
+                            session: nil, error: message))
+    }
+
+    /// Draw the answer area: how to ask (nil), the agent's steps so far, or its answer.
+    func showAnswer(_ state: AskState?) {
+        let note: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let out = NSMutableAttributedString()
+        if let state {
+            // Polling repeats itself; redrawing would drop a selection and the scroll position.
+            let drawnFrom = "\(askSeq)|\(state.status)|\(state.steps.count)|\(state.answer.count)"
+            if drawnFrom == askShown { return }
+            askShown = drawnFrom
+            let steps = NSAttributedString(
+                string: state.steps.map { "› \($0)\n" }.joined(), attributes: note)
+            switch state.status {
+            case "running":
+                out.append(steps)
+                out.append(NSAttributedString(string: "› Thinking…\n", attributes: note))
+            case "done":  // the answer leads; how the agent got there follows it
+                out.append(answerText(state.answer, size: 14))
+                if !state.sources.isEmpty {
+                    out.append(NSAttributedString(string: "\n\nSources\n", attributes: note))
+                    for path in state.sources {  // a click reveals the file in Finder
+                        out.append(NSAttributedString(
+                            string: (path as NSString).lastPathComponent + "\n",
+                            attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                                         .link: URL(fileURLWithPath: path), .toolTip: path]))
+                    }
+                }
+                out.append(NSAttributedString(
+                    string: "\n⇧↵ follow-up   ·   ↵ new question   ·   Tab back to search\n\n",
+                    attributes: [.font: NSFont.systemFont(ofSize: 11),
+                                 .foregroundColor: NSColor.secondaryLabelColor]))
+                out.append(steps)
+            default:
+                let problem = state.error.isEmpty ? "The question was not answered" : state.error
+                out.append(steps)
+                out.append(NSAttributedString(
+                    string: (state.steps.isEmpty ? "" : "\n") + problem,
+                    attributes: [.font: NSFont.systemFont(ofSize: 13),
+                                 .foregroundColor: NSColor.systemRed]))
+            }
+        } else {
+            askShown = ""
+            out.append(NSAttributedString(
+                string: "Type a question and press ↵. An agent searches and reads your files, "
+                    + "then answers here.\nWhat it reads is sent to the model dsh uses.\n\n"
+                    + "Tab goes back to search.",
+                attributes: [.font: NSFont.systemFont(ofSize: 13),
+                             .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+        answerView.textStorage?.setAttributedString(out)
+        answerView.scroll(.zero)
+    }
+
+    // A source under an answer: show the file in Finder, as ↵ does for a search result.
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = link as? URL, url.isFileURL else { return false }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        hidePanel()
+        return true
     }
 
     // Intercept arrows / return / escape from the search field.
@@ -628,11 +1179,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         case #selector(NSResponder.moveUp(_:)): move(-1); return true
         case #selector(NSResponder.insertNewline(_:)): submit(); return true
         case #selector(NSResponder.cancelOperation(_:)): hidePanel(); return true
+        case #selector(NSResponder.insertTab(_:)), #selector(NSResponder.insertBacktab(_:)):
+            guard askAvailable else { return false }
+            toggleAskMode()
+            return true
         default: return false
         }
     }
 
     func move(_ delta: Int) {
+        if askMode {  // ↑/↓ scroll the answer
+            let clip = answerScroll.contentView
+            let lowest = max(0, answerView.frame.height - clip.bounds.height)
+            let y = min(lowest, max(0, clip.bounds.origin.y + CGFloat(delta) * 60))
+            clip.scroll(to: NSPoint(x: 0, y: y))
+            answerScroll.reflectScrolledClipView(clip)
+            return
+        }
         guard !results.isEmpty else { return }
         let cur = table.selectedRow
         let next = max(0, min(results.count - 1, (cur < 0 ? 0 : cur) + delta))
@@ -653,9 +1216,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     func tableView(_ tableView: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
         let r = results[row]
         let v = NSView()
+        let ext = (r.ext ?? (r.path as NSString).pathExtension).lowercased()
+        let iconView = NSImageView(image: icon(forExtension: ext))
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(iconView)
+        loadThumbnail(for: r, into: iconView)
+        let tagView = NSImageView(image: ext.isEmpty ? NSImage() : tag(forExtension: ext))
+        tagView.translatesAutoresizingMaskIntoConstraints = false
+        tagView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        tagView.setContentHuggingPriority(.required, for: .horizontal)
+        v.addSubview(tagView)
         let name = NSTextField(labelWithString: r.filename + (r.page != nil ? "  · p.\(r.page!)" : ""))
         name.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         name.textColor = .labelColor
+        name.lineBreakMode = .byTruncatingMiddle  // gives way to the tag, keeps the extension
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let pathLabel = NSTextField(labelWithString: r.displayPath)
         pathLabel.font = NSFont.systemFont(ofSize: 10)
         pathLabel.textColor = .tertiaryLabelColor
@@ -669,13 +1245,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         sub.translatesAutoresizingMaskIntoConstraints = false
         v.addSubview(name); v.addSubview(pathLabel); v.addSubview(sub)
         NSLayoutConstraint.activate([
-            name.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 16),
-            name.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -16),
+            iconView.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 14),
+            iconView.centerYAnchor.constraint(equalTo: v.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: kIconSide),
+            iconView.heightAnchor.constraint(equalToConstant: kIconSide),
+            tagView.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -16),
+            tagView.centerYAnchor.constraint(equalTo: name.centerYAnchor),
+            name.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+            name.trailingAnchor.constraint(lessThanOrEqualTo: tagView.leadingAnchor, constant: -8),
             name.topAnchor.constraint(equalTo: v.topAnchor, constant: 7),
-            pathLabel.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 16),
+            pathLabel.leadingAnchor.constraint(equalTo: name.leadingAnchor),
             pathLabel.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -16),
             pathLabel.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 1),
-            sub.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 16),
+            sub.leadingAnchor.constraint(equalTo: name.leadingAnchor),
             sub.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -16),
             sub.topAnchor.constraint(equalTo: pathLabel.bottomAnchor, constant: 2),
         ])

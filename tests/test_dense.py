@@ -114,3 +114,18 @@ def test_dense_reflects_incremental_delete(tmp_path):
     Indexer(cfg).reindex()
     paths = {h.path for h in DenseIndex(cfg).search("alpha unique zebra", k=5)}
     assert "a.txt" not in paths
+
+
+def test_dense_filters_by_file_type(tmp_path):
+    for i in range(12):  # enough close matches to push the Markdown file out of a top 3
+        (tmp_path / f"fox{i}.txt").write_text(f"the quick brown fox jumps over the lazy dog {i}")
+    (tmp_path / "fox.md").write_text("a fox")
+    cfg = _dense_cfg(tmp_path)
+    Indexer(cfg).reindex()
+    dense = DenseIndex(cfg)
+
+    top = dense.search("the quick brown fox jumps over the lazy dog", k=3)
+    assert all(r.path.endswith(".txt") for r in top)
+    only_md = dense.search("the quick brown fox jumps over the lazy dog", k=3, exts=("md",))
+    assert [r.path for r in only_md] == ["fox.md"]
+    assert len(dense.search("quick brown fox", k=3, exts=("txt",))) == 3

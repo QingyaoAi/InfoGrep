@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # InfoGrep installer — clone the repo, then run ./install.sh
 #
-# Sets up the Python backend (uv) and the Claude Code MCP server on any platform.
+# Sets up the Python backend (uv) and, on any platform, the MCP server for Claude Code
+# and DeepSeek Harness (whichever of `claude` / `dsh` is installed).
 # On macOS, also builds the menu-bar app (⌘⇧Space launcher) and login agents (web
 # server + app). On Linux, the backend and CLI (`infogrep serve`, `infogrep mcp`, …)
 # are fully supported; there's no menu-bar app and no auto-start service — run
@@ -107,13 +108,21 @@ if command -v claude >/dev/null 2>&1; then
   claude mcp add infogrep --scope user -- "$INFOGREP" mcp --dir "$SERVE_DIR" >/dev/null 2>&1 || true
 fi
 
+# 6) DeepSeek Harness MCP (optional) -------------------------------------------
+# dsh has no `mcp add`: servers are entries in a profile's patch file, which
+# `infogrep dsh` edits (its own marked block only; a hand-written entry is kept).
+if command -v dsh >/dev/null 2>&1; then
+  say "Registering InfoGrep with DeepSeek Harness (MCP)…"
+  "$INFOGREP" dsh install --dir "$SERVE_DIR" || true
+fi
+
 if [ "$(uname)" = "Darwin" ]; then
   cat <<EOF
 
 ✅ InfoGrep installed.
    • macOS app + ⌘⇧Space launcher  (menu-bar 🔎)
    • Web UI:  http://127.0.0.1:$PORT
-   • Claude Code:  the 'infogrep' search tools are available in new sessions
+   • Claude Code / DeepSeek Harness:  the 'infogrep' search tools are available in new sessions
 
 Get started: index a folder from the app ("Index a Folder…") or the web UI ("＋ folder").
 Uninstall:   ./uninstall.sh            (add --purge to also delete the indexes)
@@ -124,7 +133,7 @@ else
 ✅ InfoGrep installed.
    • CLI:          uv run infogrep --help
    • Web UI:       uv run infogrep serve --dir <folder> --port $PORT
-   • Claude Code:  the 'infogrep' search tools are available in new sessions
+   • Claude Code / DeepSeek Harness:  the 'infogrep' search tools are available in new sessions
 
 Get started:  uv run infogrep index <folder>   then   uv run infogrep serve --dir <folder>
 There's no menu-bar app or auto-start service on Linux; run 'infogrep serve' yourself, or
