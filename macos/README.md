@@ -26,7 +26,7 @@ hotkey, type, and open the matching file.
   only appears when `dsh` is installed — the top-level README has the steps
   ([Set up question answering](../README.md#set-up-question-answering-deepseek-harness)),
   what to do when the button is missing, and what a question runs and leaves on disk.
-- Menu-bar 🔎 icon → Search… / Quit
+- Menu-bar icon (a magnifier with a spark in it) → Search… / Quit
 
 ## Download & run (standalone app)
 
@@ -41,7 +41,7 @@ rather than notarized — the DMG does not change that:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/InfoGrep.app   # clears the download flag
-open /Applications/InfoGrep.app                             # 🔎 appears; press ⌘⇧-Space
+open /Applications/InfoGrep.app                             # its icon appears in the menu bar; press ⌘⇧-Space
 ```
 
 Without a terminal: open it once, let macOS refuse, then **System Settings → Privacy &
@@ -49,7 +49,7 @@ Security → Open Anyway**. (Control-click → Open used to do this in one step;
 removed that shortcut for apps that aren't notarized, so on macOS 15 and later it just
 shows the same refusal.)
 
-Pick **Index a Folder…** from the 🔎 menu to build your first index. (Dense/semantic
+Pick **Index a Folder…** from the menu-bar icon to build your first index. (Dense/semantic
 search isn't in the bundle — it needs torch; use the pip install for that. The Anserini
 jar for keyword search is downloaded once, ~112 MB, on first indexing.)
 
@@ -80,7 +80,7 @@ installs it to `/Applications`, and runs both the backend and the app at login.
 
 ## Pick / index folders
 
-The menu-bar 🔎 lists every InfoGrep index under **Search in:** — click one to switch which
+The menu-bar icon lists every InfoGrep index under **Search in:** — click one to switch which
 folder ⌘⇧Space searches (the choice is remembered). With more than one index, **All Folders**
 (the default) searches them together, ranked as a single collection. **Index a Folder…** opens a folder
 picker and indexes it in the background (shown as `(indexing…)` until ready). The browser

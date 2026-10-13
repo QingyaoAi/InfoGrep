@@ -120,7 +120,7 @@ if [ "$(uname)" = "Darwin" ]; then
   cat <<EOF
 
 ✅ InfoGrep installed.
-   • macOS app + ⌘⇧Space launcher  (menu-bar 🔎)
+   • macOS app + ⌘⇧Space launcher  (the magnifier in the menu bar)
    • Web UI:  http://127.0.0.1:$PORT
    • Claude Code / DeepSeek Harness:  the 'infogrep' search tools are available in new sessions
 

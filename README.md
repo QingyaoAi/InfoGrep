@@ -154,7 +154,7 @@ the same for all three and is described in
    ```
 
    Or open it, let macOS refuse, then **System Settings → Privacy & Security → Open Anyway**.
-3. Open it. A 🔎 appears in the menu bar; choose **Index a Folder…** there.
+3. Open it. A magnifier icon appears in the menu bar; choose **Index a Folder…** there.
 4. Press **⌘⇧Space** and type.
 
 It bundles Python, InfoGrep and a Java runtime, and starts its own local server, so there is
@@ -288,7 +288,7 @@ profile that InfoGrep builds on.)
 | Terminal | `infogrep ask "your question"` (`--dir` for one folder, `--continue` to follow up) |
 
 The launcher and the browser UI only show **Ask** once the InfoGrep server has found `dsh`.
-The launcher asks again each time you open its 🔎 menu, and the browser UI on every page
+The launcher asks again each time you open its menu-bar menu, and the browser UI on every page
 load, so after installing `dsh` there is nothing to restart.
 
 **If there is no Ask button**, the server did not find `dsh`. A server started at login or

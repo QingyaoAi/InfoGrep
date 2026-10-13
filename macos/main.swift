@@ -474,7 +474,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
     // MARK: menu bar
     func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "🔎"
+        // A template symbol, so the menu bar tints it like its neighbours in either
+        // appearance (an emoji stays full-colour and looks pasted on). The magnifier
+        // with a spark in it is from macOS 14; the plain text one stands in before that.
+        let symbol = ["sparkle.magnifyingglass", "text.magnifyingglass"].lazy
+            .compactMap { NSImage(systemSymbolName: $0, accessibilityDescription: "InfoGrep") }
+            .first?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium))
+        symbol?.isTemplate = true
+        statusItem.button?.image = symbol
+        statusItem.button?.toolTip = "InfoGrep"
         let menu = NSMenu()
         menu.delegate = self  // refresh the index list each time the menu opens
         statusItem.menu = menu
@@ -981,7 +990,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
                     .map { " (\($0.label) only)" } ?? ""
                 self.showStatus(self.indexes.contains(where: { $0.indexed })
                     ? "No results in \(self.currentFolderName())\(only)"
-                    : "No indexes yet — choose “Index a Folder…” from the 🔎 menu")
+                    : "No indexes yet — choose “Index a Folder…” from the menu-bar icon")
             } else {
                 self.showStatus(nil)
                 self.table.selectRowIndexes([0], byExtendingSelection: false)
