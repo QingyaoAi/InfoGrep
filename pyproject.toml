@@ -28,7 +28,9 @@ dependencies = [
     "python-pptx>=1.0.2",
     "pathspec>=1.1.1",
     "pyjnius>=1.6.1",
-    "mcp>=1.28.0",
+    # Capped below 2: that release renamed FastMCP and changed the server API, and an
+    # install that resolves to it cannot start `infogrep mcp` at all.
+    "mcp>=1.28.0,<2",
     "openpyxl>=3.1.5",
 ]
 
