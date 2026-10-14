@@ -20,6 +20,19 @@ def _sparse_available() -> bool:
 needs_sparse = pytest.mark.skipif(not _sparse_available(), reason="Anserini jar/JDK21 not available")
 
 
+def _local_jar():
+    try:
+        from infogrep import anserini
+
+        return anserini.find_local_jar()
+    except Exception:
+        return None
+
+
+# Found now, under the real INFOGREP_HOME: a test runs with its own, which has no jar.
+_JAR = _local_jar()
+
+
 @needs_sparse
 def test_cjk_analyzer_is_bigram():
     from infogrep.anserini import autoclass
@@ -60,6 +73,7 @@ def test_en_zh_builds_in_cold_process(tmp_path):
     # Regression: the en+zh analyzer uses Lucene CustomAnalyzer, which is only on the
     # classpath if infogrep.anserini is imported before jnius. pytest masks this (another
     # test boots the JVM first), so build in a FRESH process to catch it.
+    import os
     import subprocess
     import sys
     import textwrap
@@ -78,7 +92,10 @@ def test_en_zh_builds_in_cold_process(tmp_path):
         assert e.search_sparse("信息检索", 3)      # Chinese (bigrams)
         print("COLD_OK")
     """)
-    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    # The jar this process found, or the fresh one would download it (112 MB) every run.
+    env = {**os.environ, **({"INFOGREP_ANSERINI_JAR": str(_JAR)} if _JAR else {})}
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                       check=False, env=env, timeout=300)
     assert "COLD_OK" in r.stdout, (r.stdout + r.stderr)[-2000:]
 
 
