@@ -147,11 +147,10 @@ class SearchEngine:
         kwargs = {"prf": prf} if name == "sparse" else {}
         if exts:  # only files with these extensions (see Retriever.search)
             kwargs["exts"] = exts
-        hits = self._backend(name).search(query, k=k, **kwargs)
-        # KB paths are vault-relative and we only know the vault's name, not its
-        # filesystem root, so enrich with filename/ext only (root=None leaves abs_path
-        # unset). All other retrievers' paths are relative to the indexed directory.
-        root = None if name == "kb" else self.config.target_dir
+        backend = self._backend(name)
+        hits = backend.search(query, k=k, **kwargs)
+        # KB paths are relative to the vault; every other retriever's to the indexed folder.
+        root = backend.root if name == "kb" else self.config.target_dir
         return [with_file_metadata(r, root) for r in hits]
 
     def search_sparse(self, query: str, k: int = 10, prf: bool = False) -> list[Result]:
@@ -208,7 +207,7 @@ class SearchEngine:
         exts: tuple = (),
     ) -> HybridResults:
         names = retrievers or [r for r in ALL_RETRIEVERS if self._enabled(r)]
-        # Left out at the caller's request (e.g. the launcher drops the slow kb backend
+        # Left out at the caller's request (e.g. the launcher leaves out the knowledge base
         # unless asked for it), so unlike a disabled backend it isn't reported as skipped.
         names = [name for name in names if name not in exclude]
         pool = max(k, _POOL_MIN)
@@ -256,11 +255,11 @@ class SearchEngine:
         """Pay the one-time search costs now instead of on the first real query.
 
         A cold sparse query spends about a second booting the JVM and opening the
-        index, and the graph retriever parses its JSON on first use. UIs call this when
-        they open so that work overlaps with the user typing. Best-effort: a backend
-        with no index yet is simply left cold.
+        index, the graph retriever parses its JSON on first use, and the knowledge base
+        reads its vault. UIs call this when they open so that work overlaps with the user
+        typing. Best-effort: a backend with no index (or vault) yet is simply left cold.
         """
-        for name in ("sparse", "graph"):
+        for name in ("sparse", "graph", "kb"):
             if self._enabled(name):
                 try:
                     self._run(name, "warm", 1)

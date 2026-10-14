@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>InfoGrep</title>
+<link rel="stylesheet" href="sidepanel.css"/>
+</head>
+<body>
+<header>
+  <img class="logo" src="icons/icon-32.png" alt=""/>
+  <span class="brand">InfoGrep</span>
+  <span class="sub">form filler</span>
+</header>
+
+<section class="card trouble" id="trouble" hidden>
+  <p id="troubletext"></p>
+  <div class="line">
+    <input type="text" id="server" spellcheck="false" aria-label="InfoGrep server address"/>
+    <button id="retry">Retry</button>
+  </div>
+</section>
+
+<main id="main" hidden>
+  <section class="card">
+    <div class="pagetitle" id="pagetitle"></div>
+    <div class="line">
+      <span class="count" id="count"></span>
+      <button id="rescan" class="icon" title="Look at the page again">↻</button>
+    </div>
+  </section>
+
+  <label class="stack" for="note">Note for the agent <span class="mut">· optional, kept for next time</span></label>
+  <textarea id="note" rows="3" placeholder="Who the form is for, which address or phone to use — anything your files won't say."></textarea>
+
+  <div class="line">
+    <label class="mut" for="dir">Search</label>
+    <select id="dir"></select>
+  </div>
+  <label class="chk"><input type="checkbox" id="overwrite"/> Replace what is already filled in</label>
+  <label class="chk" title="Facts found for earlier forms are used, and new ones remembered. Untick it for a form that isn't about you.">
+    <input type="checkbox" id="memory" checked/> Use what is remembered about me</label>
+  <div class="facts" id="facts" hidden></div>
+
+  <div class="line">
+    <button id="fill" class="primary" disabled>Fill in this page</button>
+    <button id="stop" hidden>Stop</button>
+  </div>
+  <div class="memo" id="memo" hidden>Goes on from what the agent found last time. <a href="#" id="fresh">Start over</a></div>
+
+  <div class="meta" id="meta"></div>
+  <div class="steps" id="steps"></div>
+  <div id="results"></div>
+</main>
+
+<footer>
+  It only fills fields in: it never presses a button or submits the page.
+  The field labels, and the parts of your files the agent reads, go to the model dsh uses.
+</footer>
+<script src="sidepanel.js"></script>
+</body>
+</html>

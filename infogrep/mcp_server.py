@@ -193,8 +193,8 @@ def search_kb(query: str, k: int = 10, directory: str | None = None) -> dict:
     """Graph-aware search over an Obsidian knowledge-base vault.
 
     Matches notes by content/title/tags, then expands along ``[[wikilinks]]`` so that
-    notes connected to a match are surfaced too. Requires kb.vault_path + kb.enabled
-    in the directory's config.
+    notes connected to a match are surfaced too. Reads the vault's files (the Obsidian
+    app needn't be running); requires kb.enabled in the directory's config.
 
     Args:
         query: search query.
@@ -266,7 +266,7 @@ def read_file(path: str, offset: int = 0, limit: int = _READ_LIMIT) -> dict:
     """Read a file's text the way InfoGrep extracts it: PDF, Word, slides, sheets, text.
 
     A search result carries only a short snippet; use this to read the file behind it.
-    Only files inside an indexed directory can be read.
+    Only files inside an indexed directory, or a knowledge-base vault, can be read.
 
     Args:
         path: the file to read — a result's ``abs_path``.
@@ -276,11 +276,14 @@ def read_file(path: str, offset: int = 0, limit: int = _READ_LIMIT) -> dict:
     Returns ``text`` (pages and slides are marked ``[page N]``), ``total_chars``, and
     ``next_offset`` to pass as ``offset`` for the rest (None once the end is reached).
     """
+    from .retrieval.kb import vault_roots
+
     real = os.path.realpath(os.path.join(_resolve(None), os.path.expanduser(path)))
-    roots = [os.path.realpath(str(d)) for d in indexed_dirs()] + [_resolve(None)]
+    roots = [os.path.realpath(str(d)) for d in [*indexed_dirs(), *vault_roots()]]
+    roots.append(_resolve(None))
     root = next((r for r in roots if real == r or real.startswith(r + os.sep)), None)
     if root is None:
-        raise ValueError(f"{path} is not inside an indexed directory")
+        raise ValueError(f"{path} is not inside an indexed directory or a vault")
     if not os.path.isfile(real):
         raise FileNotFoundError(f"no such file: {path}")
     ingest = Config.load(root).ingest
@@ -310,7 +313,7 @@ def kb_learn(
     per entity linking back. Future ``search_kb``/``search_hybrid`` calls then answer
     questions about the topic or its entities straight from the vault via link
     expansion. Idempotent per topic: rebuilding refreshes the topic note without
-    duplicating entity mentions. Requires the Obsidian app + CLI.
+    duplicating entity mentions. Writes the vault's files directly (no Obsidian app).
 
     Args:
         query: topic to research and persist (also becomes the topic note's title).

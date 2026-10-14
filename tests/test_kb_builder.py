@@ -7,38 +7,20 @@ from infogrep.retrieval.base import Result
 from infogrep.retrieval.kb import KnowledgeBaseIndex
 
 
-def _unescape(text: str) -> str:
-    """Inverse of the CLI's content escaping (\\\\, \\n, \\t)."""
-    return (
-        text.replace("\\\\", "\x00").replace("\\n", "\n").replace("\\t", "\t").replace("\x00", "\\")
-    )
+class Vault:
+    """A real vault folder whose notes the tests read as a dict of path -> text."""
 
+    def __init__(self, root):
+        self.root = root
+        root.mkdir(parents=True, exist_ok=True)
 
-class FakeVault:
-    """Writable stand-in for the Obsidian CLI, mimicking its quirks.
+    @property
+    def notes(self) -> dict[str, str]:
+        return {p.relative_to(self.root).as_posix(): p.read_text() for p in self.root.rglob("*.md")}
 
-    Notably: ``create`` without ``overwrite`` on an existing path silently writes
-    to ``<name> 1.md`` (as the real CLI does) instead of failing.
-    """
-
-    def __init__(self):
-        self.notes: dict[str, str] = {}
-        self.calls: list[tuple[str, dict]] = []
-
-    def __call__(self, command, params):
-        self.calls.append((command, params))
-        path = params.get("path", "")
-        if command == "read":
-            return self.notes.get(path) or "Error: file not found"
-        if command == "create":
-            if path in self.notes and "overwrite" not in params:
-                path = f"{path.removesuffix('.md')} 1.md"
-            self.notes[path] = _unescape(params["content"])
-            return f"Created: {path}"
-        if command == "append":
-            self.notes[path] = self.notes.get(path, "") + "\n" + _unescape(params["content"])
-            return f"Appended to {path}"
-        return ""
+    def write(self, path: str, text: str) -> None:
+        (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / path).write_text(text)
 
 
 def _res(path, snippet, score=1.0, retriever="sparse", page=None):
@@ -52,13 +34,13 @@ def _builder(tmp_path, results, graph_results=None):
     """Engine with a fake vault and stubbed searches returning canned results."""
     cfg = Config.load(tmp_path)
     engine = SearchEngine(cfg)
-    fake = FakeVault()
-    engine._backends["kb"] = KnowledgeBaseIndex(cfg, runner=fake)
+    vault = Vault(tmp_path / "vault")
+    engine._backends["kb"] = KnowledgeBaseIndex(cfg, vault=vault.root)
     engine.search_hybrid = lambda query, k=10, retrievers=None, prf=False: HybridResults(
         results=results, used=["sparse"]
     )
     engine.search_graph = lambda query, k=10: graph_results or []
-    return KnowledgeGraphBuilder(engine), fake
+    return KnowledgeGraphBuilder(engine), vault
 
 
 # -- entity extraction -------------------------------------------------------
@@ -214,7 +196,7 @@ def test_existing_entity_note_gains_mention_for_new_topic(tmp_path):
     results = [_res("a.pdf", "Chain of Thought."), _res("b.pdf", "Chain of Thought.")]
     builder, vault = _builder(tmp_path, results)
     entity_path = "Agent Knowledge/Entities/Chain of Thought.md"
-    vault.notes[entity_path] = "# Chain of Thought\n\n## Mentions\n"
+    vault.write(entity_path, "# Chain of Thought\n\n## Mentions\n")
 
     out = builder.build("reasoning")
     assert out["entity_notes_updated"] == [entity_path]
@@ -268,18 +250,17 @@ def test_no_results_writes_nothing(tmp_path):
     assert vault.notes == {}
 
 
-def test_create_note_escapes_newlines_for_cli(tmp_path):
+def test_notes_are_plain_files_in_the_agent_folder(tmp_path):
     builder, vault = _builder(tmp_path, [_res("a.pdf", "X Y"), _res("b.pdf", "X Y")])
     builder.build("q")
-    create_calls = [p for c, p in vault.calls if c == "create"]
-    assert create_calls and all("\n" not in p["content"] for p in create_calls)
-    assert any("\\n" in p["content"] for p in create_calls)
+    assert vault.notes and all(path.startswith("Agent Knowledge/") for path in vault.notes)
+    assert all(text.startswith("---\ntags:\n") for text in vault.notes.values())  # real newlines
 
 
 def test_engine_learn_entry_point(tmp_path):
     cfg = Config.load(tmp_path)
     engine = SearchEngine(cfg)
-    engine._backends["kb"] = KnowledgeBaseIndex(cfg, runner=FakeVault())
+    engine._backends["kb"] = KnowledgeBaseIndex(cfg, vault=Vault(tmp_path / "vault").root)
     engine.search_hybrid = lambda query, k=10, retrievers=None, prf=False: HybridResults(
         results=[_res("a.md", "Graph RAG pipelines."), _res("b.md", "Graph RAG index.")],
         used=["sparse"],

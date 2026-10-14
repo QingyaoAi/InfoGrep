@@ -34,6 +34,9 @@ def _reveal_in_file_manager(path: str) -> None:
 # Uncommon, easy-to-type default port (in the dynamic range, unlikely to collide).
 DEFAULT_PORT = 7421
 
+# The largest request body read: a web form's fields, as the browser extension posts them.
+_MAX_BODY = 2_000_000
+
 # InfoGrep's logo (the app icon: a compass star on a rounded square) at 48 px, inlined so
 # the single-file server needs no static asset route. It is the shape of
 # macos/assets/AppIcon.icns without its margin and shadow; docs/assets has larger copies.
@@ -297,8 +300,8 @@ PAGE = r"""<!doctype html>
     <div class="knum" id="kwrap"><span>results</span><input type="number" id="k" value="10" min="1" max="50"/></div>
     <label class="chk" id="prfwrap" title="RM3 pseudo-relevance feedback: expand the query with terms from top results">
       <input type="checkbox" id="prf"/> query expansion</label>
-    <label class="chk" id="noteswrap" title="Let the agent search the Obsidian knowledge base too (slower)">
-      <input type="checkbox" id="notes"/> include notes</label>
+    <label class="chk" id="noteswrap" title="Let the agent search the Obsidian knowledge base too">
+      <input type="checkbox" id="notes" checked/> include notes</label>
     <label class="chk" id="followwrap" title="Continue the conversation the last answer belongs to">
       <input type="checkbox" id="follow"/> follow-up on the last answer</label>
   </div>
@@ -596,8 +599,10 @@ def _make_handler(directory: Path):
     default_dir = str(Config.load(directory).target_dir)
     engines: dict[str, SearchEngine] = {}  # dir -> SearchEngine (warm searchers)
     jobs: dict[str, str] = {}  # dir -> "running" | "done" | "error: ..."
-    # The one question being answered, or the last one that was (see start_ask).
+    # The one question being answered, or the last one that was, and the same for the one
+    # web form being filled in (see start_job).
     asked: dict = {"job": None, "run": None}
+    filling: dict = {"job": None, "run": None}
     state_lock = threading.Lock()
 
     def engine_for(d: str | None) -> SearchEngine:
@@ -611,6 +616,12 @@ def _make_handler(directory: Path):
     def all_engines() -> list[SearchEngine]:
         """An engine per folder that has an index (``scope=all`` searches them together)."""
         return [engine_for(str(d)) for d in indexed_dirs()]
+
+    def has_vault(cfg: Config) -> bool:
+        from .retrieval.kb import vault_root
+
+        root = vault_root(cfg.kb)
+        return root is not None and root.is_dir()
 
     def list_indexes() -> list[dict]:
         from . import scheduler
@@ -633,7 +644,8 @@ def _make_handler(directory: Path):
                     "name": Path(target).name,
                     "scheduled": scheduler.is_scheduled(Path(target)),
                     "schedule_at": schedules.get(target),
-                    "kb": cfg.kb.enabled,  # lets clients offer (or hide) a notes toggle
+                    # Lets clients offer (or hide) a notes toggle: there is a vault to search.
+                    "kb": cfg.kb.enabled and has_vault(cfg),
                 }
                 try:  # fast: read the manifest, don't walk the filesystem
                     st = Indexer(cfg).status(check_staleness=False)
@@ -729,42 +741,40 @@ def _make_handler(directory: Path):
             shutil.rmtree(idx)
         return {"ok": True, "dir": key}
 
-    def start_ask(
-        question: str, d: str | None, everywhere: bool, session: str, server: str, notes: bool
-    ) -> dict:
-        """Hand a question to a dsh agent (see :mod:`infogrep.ask`); poll it with ask_state.
+    def start_job(slot: dict, make, report: dict, done) -> dict:
+        """Set a dsh agent to work in ``slot`` and follow it; poll it with job_state.
 
-        One question runs at a time: asking another stops the one in flight.
+        One job runs in a slot at a time: starting another stops the one in flight.
+        ``make`` starts the agent, ``report`` is what the job tells its client besides the
+        agent's steps, and ``done`` turns the agent's answer into the rest of that.
         """
-        from .ask import Ask, AskError
+        from .ask import AskError
 
         with state_lock:
-            running, previous = asked["run"], asked["job"]
+            running, previous = slot["run"], slot["job"]
         if running is not None:
             running.cancel()
-        target = None if everywhere else engine_for(d).config.target_dir
         try:
-            run = Ask(question, directory=target, session=session or None, server=server,
-                      notes=notes)
+            run = make()
         except AskError as exc:
             return {"ok": False, "error": str(exc)}
         job = {"id": (previous["id"] if previous else 0) + 1, "status": "running",
-               "question": question, "steps": [], "answer": "", "sources": [],
-               "session": session, "error": ""}
+               "steps": [], "error": "", **report}
         with state_lock:
-            asked.update(job=job, run=run)
+            slot.update(job=job, run=run)
 
         def work():
             try:
                 for event in run.events():
+                    # Outside the lock: making sense of an answer may mean reading files.
+                    result = done(event) if event["type"] == "answer" else {}
                     with state_lock:
                         if event["type"] == "session":
                             job["session"] = event["id"]
                         elif event["type"] == "step":
                             job["steps"].append(event["text"])
                         elif event["type"] == "answer":
-                            job.update(status="done", answer=event["text"],
-                                       sources=event["sources"])
+                            job.update(status="done", **result)
             except AskError as exc:
                 with state_lock:
                     job.update(status="cancelled" if run.cancelled else "error", error=str(exc))
@@ -773,26 +783,93 @@ def _make_handler(directory: Path):
                     job.update(status="error", error=f"{type(exc).__name__}: {exc}")
             finally:
                 with state_lock:
-                    if asked["run"] is run:
-                        asked["run"] = None
+                    if slot["run"] is run:
+                        slot["run"] = None
 
         threading.Thread(target=work, daemon=True).start()
         return {"ok": True, "id": job["id"]}
 
-    def ask_state(job_id: str) -> dict:
-        """Where a question stands: its steps so far, and the answer once there is one."""
+    def job_state(slot: dict, job_id: str) -> dict:
+        """Where a job stands: the agent's steps so far, and its result once there is one."""
         with state_lock:
-            job = asked["job"]
+            job = slot["job"]
             if job is None or (job_id and job_id != str(job["id"])):
                 return {"status": "gone"}
             return {**job, "steps": list(job["steps"])}
 
-    def cancel_ask() -> dict:
+    def cancel_job(slot: dict) -> dict:
         with state_lock:
-            running = asked["run"]
+            running = slot["run"]
         if running is not None:
             running.cancel()
         return {"ok": True}
+
+    def start_ask(
+        question: str, d: str | None, everywhere: bool, session: str, server: str, notes: bool
+    ) -> dict:
+        """Hand a question to a dsh agent (see :mod:`infogrep.ask`)."""
+        from .ask import Ask
+
+        target = None if everywhere else engine_for(d).config.target_dir
+        return start_job(
+            asked,
+            lambda: Ask(question, directory=target, session=session or None, server=server,
+                        notes=notes),
+            {"question": question, "answer": "", "sources": [], "session": session},
+            lambda event: {"answer": event["text"], "sources": event["sources"]},
+        )
+
+    def newer_mention(name: str, since: float, source: str) -> bool:
+        """Whether a file changed after ``since`` (other than ``source``) mentions ``name``:
+        then a remembered fact about it may be out of date."""
+        engines = all_engines()
+        try:
+            out = search_across(engines, "sparse", name, k=10) if engines else None
+        except Exception:
+            return False  # no keyword index to ask: the fact goes unchecked this time
+        return any(r.mtime and r.mtime > since and r.abs_path != source
+                   for r in (out.results if out else []))
+
+    def start_fill(form: dict, d: str | None, everywhere: bool, session: str, server: str) -> dict:
+        """Have a dsh agent work out what goes in a web form (see :mod:`infogrep.fill`).
+
+        ``form`` is what the browser extension read off the page: ``page``, ``fields``, the
+        user's ``note``, ``changed`` for a later round of the same form, and ``memory``:
+        false to leave what is remembered about the user (:mod:`infogrep.memory`) out of
+        it. The job ends with a value for each field the agent could fill, and ``learned``,
+        how many remembered facts the agent's findings added or changed.
+        """
+        from . import fill
+        from .memory import FormMemory
+
+        fields = fill.clean_fields(form.get("fields"))
+        if not fields:
+            return {"ok": False, "error": "no fields to fill in"}
+        target = None if everywhere else engine_for(d).config.target_dir
+        remember = form.get("memory") is not False
+        # The first form of a conversation is told what is remembered; later ones have it.
+        brief = FormMemory.load().brief(newer=newer_mention) if remember and not session else ""
+
+        def done(event: dict) -> dict:
+            values, note = fill.parse(event["text"], fields)
+            learned = 0
+            if remember:
+                memory = FormMemory.load()  # afresh: the note may have been edited meanwhile
+                values = memory.reveal(values)
+                learned = memory.learn(fill.parse_facts(event["text"]))
+            values = [v for v in values if "value" in v]  # a fact it named, not remembered
+            return {"values": fill.mark_copied(values, fields), "note": note, "learned": learned}
+
+        started = start_job(
+            filling,
+            lambda: fill.start(form.get("page"), fields, form.get("note"), directory=target,
+                               session=session or None, server=server,
+                               changed=form.get("changed") is True, memory=brief),
+            {"values": [], "note": "", "session": session, "learned": 0},
+            done,
+        )
+        # How many of the fields sent the agent is shown: a very long form loses its last.
+        return {**started, "fields": len(fields)} if started["ok"] else started
 
     class Handler(BaseHTTPRequestHandler):
         # Quiet by default (no per-request stderr logging).
@@ -819,7 +896,13 @@ def _make_handler(directory: Path):
             elif parsed.path == "/api/status":
                 self._json(self._status(qs))
             elif parsed.path == "/api/ask":  # poll a question started with POST
-                self._json(ask_state(qs.get("id", [""])[0]))
+                self._json(job_state(asked, qs.get("id", [""])[0]))
+            elif parsed.path == "/api/fill":  # poll a web form started with POST
+                self._json(job_state(filling, qs.get("id", [""])[0]))
+            elif parsed.path == "/api/fill/memory":  # where the form memory is, and its size
+                from .memory import FormMemory
+
+                self._json(FormMemory.load().about())
             elif parsed.path == "/api/search":
                 self._json(self._search(qs))
             elif parsed.path == "/api/warm":  # open a folder's backends before the first query
@@ -834,10 +917,10 @@ def _make_handler(directory: Path):
                          for tid, (label, exts) in FILE_TYPES.items()]
                 from .ask import dsh_command
 
+                agent = dsh_command() is not None  # answering and form filling need dsh
                 self._json(
                     {"indexes": indexes, "default": effective_default(indexes),
-                     "types": types, "version": __version__,
-                     "ask": dsh_command() is not None}  # question answering needs dsh
+                     "types": types, "version": __version__, "ask": agent, "fill": agent}
                 )
             elif parsed.path == "/api/index":  # start (re)indexing a folder
                 self._json(self._start_index(qs))
@@ -857,13 +940,42 @@ def _make_handler(directory: Path):
             elif parsed.path == "/api/ask":
                 self._json(self._start_ask(qs))
             elif parsed.path == "/api/ask/cancel":
-                self._json(cancel_ask())
+                self._json(cancel_job(asked))
+            elif parsed.path == "/api/fill":
+                self._json(self._start_fill(qs))
+            elif parsed.path == "/api/fill/cancel":
+                self._json(cancel_job(filling))
             elif parsed.path == "/api/schedule":
                 self._json(self._set_schedule(qs))
             elif parsed.path == "/api/forget":
                 self._json(forget_index((qs.get("dir", [""])[0]).strip()))
             else:
                 self._json({"error": "not found"}, code=404)
+
+        def _body(self) -> dict:
+            """The JSON object a request carries; empty when there is none that parses."""
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length)) if 0 < length <= _MAX_BODY else None
+            except ValueError:
+                data = None
+            return data if isinstance(data, dict) else {}
+
+        def _start_fill(self, qs: dict) -> dict:
+            # The browser extension asks for this, from its own pages. A script on a web
+            # page can post here as well (it could not read the result): refuse it, so that
+            # no site can set the agent to work on the user's files.
+            origin = self.headers.get("Origin")
+            if origin and not origin.startswith("chrome-extension://"):
+                return {"ok": False, "error": "form filling is for the InfoGrep extension"}
+            return start_fill(
+                self._body(),
+                qs.get("dir", [None])[0],
+                qs.get("scope", [""])[0] == "all",
+                qs.get("session", [""])[0],  # continue that conversation
+                # As for a question: the agent's searches come back to this server.
+                f"http://127.0.0.1:{self.server.server_address[1]}",
+            )
 
         def _start_ask(self, qs: dict) -> dict:
             question = (qs.get("q", [""])[0]).strip()
@@ -877,7 +989,7 @@ def _make_handler(directory: Path):
                 qs.get("scope", [""])[0] == "all",
                 qs.get("session", [""])[0],  # continue that conversation
                 server,
-                # The knowledge base is slow to search, so it is only used on request.
+                # The knowledge base is only searched on request.
                 qs.get("notes", ["0"])[0] in ("1", "true", "on"),
             )
 
@@ -894,10 +1006,15 @@ def _make_handler(directory: Path):
             path = (qs.get("path", [""])[0]).strip()
             if not path:
                 return {"ok": False, "error": "no path"}
-            # Reveal only files inside a *known* indexed directory (guard against ../).
+            # Reveal only files inside a *known* indexed directory or vault (guard against ../).
+            from .memory import note_path
+            from .retrieval.kb import vault_roots
+
             real = os.path.realpath(path)
             roots = [os.path.realpath(str(e.config.target_dir)) for e in engines.values()]
-            roots.append(os.path.realpath(default_dir))
+            roots += [os.path.realpath(default_dir), *map(os.path.realpath, vault_roots())]
+            if real == os.path.realpath(note_path()):  # the form memory, wherever it is kept
+                roots.append(real)
             if not any(real == r or real.startswith(r + os.sep) for r in roots):
                 return {"ok": False, "error": "path is outside an indexed directory"}
             if not os.path.exists(real):

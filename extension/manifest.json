@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "InfoGrep Form Filler",
+  "version": "1.1.0",
+  "description": "Fills in the form on the page from your own files, through the local InfoGrep server and a DeepSeek Harness agent. It never submits.",
+  "minimum_chrome_version": "121",
+  "permissions": [
+    "sidePanel",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Fill in this page with InfoGrep",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "homepage_url": "https://github.com/QingyaoAi/InfoGrep"
+}

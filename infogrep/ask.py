@@ -25,7 +25,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from . import dsh
@@ -146,10 +146,13 @@ def patch_text() -> str:
     )
 
 
-def write_patch() -> Path:
-    """Put the overlay on disk (only rewritten when it would differ) and return its path."""
-    path = ask_home() / "dsh.patch.yml"
-    text = patch_text()
+def write_patch(name: str = "dsh.patch.yml", text: str | None = None) -> Path:
+    """Put the overlay on disk (only rewritten when it would differ) and return its path.
+
+    ``name`` and ``text`` are for an overlay other than the agent's own, kept beside it.
+    """
+    path = ask_home() / name
+    text = patch_text() if text is None else text
     if not path.is_file() or path.read_text() != text:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Replaced in one step: another question may be starting dsh on it right now.
@@ -160,21 +163,23 @@ def write_patch() -> Path:
     return path
 
 
-def _prompt(question: str, directory: Path | None, all_folders: bool) -> str:
+def _prompt(
+    question: str, directory: Path | None, all_folders: bool, template: str = _PROMPT
+) -> str:
     if all_folders:
         dirs = ", ".join(str(d) for d in indexed_dirs())
         scope = f"every indexed folder ({dirs})" if dirs else "every indexed folder"
     else:
         scope = f"the folder {directory}"
-    return _PROMPT.format(scope=scope, question=question.strip())
+    return template.format(scope=scope, question=question.strip())
 
 
 # -- conversations kept on disk ---------------------------------------------------
 
 
-def _sessions() -> list[Path]:
+def _sessions(root: Path | None = None) -> list[Path]:
     """One directory per conversation: ``sessions/<working directory>/<session id>``."""
-    return [p for p in (ask_home() / "sessions").glob("*/*") if p.is_dir()]
+    return [p for p in (root or ask_home() / "sessions").glob("*/*") if p.is_dir()]
 
 
 def _touched(session: Path) -> float:
@@ -191,11 +196,14 @@ def latest_session() -> str | None:
     return newest.name if newest else None
 
 
-def prune(keep_days: float = KEEP_DAYS) -> int:
-    """Delete conversations last touched more than ``keep_days`` ago; returns how many."""
+def prune(keep_days: float = KEEP_DAYS, root: Path | None = None) -> int:
+    """Delete conversations last touched more than ``keep_days`` ago; returns how many.
+
+    ``root`` is for conversations an overlay keeps somewhere other than ``ask/sessions``.
+    """
     cutoff = time.time() - keep_days * 86400
     removed = 0
-    for session in _sessions():
+    for session in _sessions(root):
         if _touched(session) < cutoff:
             shutil.rmtree(session, ignore_errors=True)
             removed += 1
@@ -257,8 +265,11 @@ class Ask:
     Iterate :meth:`events` for its progress and the answer; :meth:`cancel` stops it from
     any thread. ``session`` continues an earlier conversation (see :func:`latest_session`),
     and ``server`` names the ``infogrep serve`` the agent's searches should go through.
-    The Obsidian knowledge base is left out unless ``notes`` asks for it: it answers
-    through the Obsidian app, far slower than the indexes, and an agent searches many times.
+    The Obsidian knowledge base is left out unless ``notes`` asks for it.
+
+    The same agent does other work when told to (see :mod:`infogrep.fill`): ``template``
+    is what a new conversation opens with, the question in its ``{question}``, and
+    ``patches`` are overlays laid over the agent's own.
     """
 
     def __init__(
@@ -270,6 +281,8 @@ class Ask:
         server: str | None = None,
         notes: bool = False,
         timeout: float = TIMEOUT_S,
+        template: str = _PROMPT,
+        patches: Sequence[Path] = (),
     ):
         exe = dsh_command()
         if exe is None:
@@ -299,13 +312,16 @@ class Ask:
         if server:
             env["INFOGREP_SERVER"] = server
 
-        command = [exe, "--profile", PROFILE, "--patch", str(write_patch()), "--json"]
+        command = [exe, "--profile", PROFILE, "--patch", str(write_patch())]
+        for patch in patches:
+            command += ["--patch", str(patch)]
+        command.append("--json")
         if session:
             # The conversation already carries the instructions; send the question alone.
             command += ["--session-id", session]
             task = question.strip()
         else:
-            task = _prompt(question, directory, all_folders)
+            task = _prompt(question, directory, all_folders, template)
         self.session = session
         self.cancelled = False
         self._timed_out = False

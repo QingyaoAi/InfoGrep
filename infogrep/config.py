@@ -98,11 +98,12 @@ class SparseConfig:
 
 @dataclass
 class KnowledgeBaseConfig:
-    """Obsidian knowledge-base settings (backed by the Obsidian CLI)."""
+    """Obsidian knowledge-base settings. The vault is read straight from its files."""
 
     enabled: bool = False
-    vault: str | None = None  # Obsidian vault name; None -> the CLI's active vault
-    cli: str = "obsidian"  # path to the Obsidian CLI binary
+    vault: str | None = None  # Obsidian vault name; None -> the vault open in Obsidian
+    vault_path: str | None = None  # the vault's folder, when Obsidian's list doesn't have it
+    cli: str = "obsidian"  # no longer used (the vault isn't read through the CLI any more)
     hops: int = 1  # graph link hops to expand (follows links + backlinks)
     search_limit: int = 10  # how many search hits to seed graph expansion from
     # Vault folder that agent-written notes (``infogrep learn``) go into. All

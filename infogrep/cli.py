@@ -163,7 +163,7 @@ def ask(
         False, "--continue", "-c", help="Follow up on the previous question."
     ),
     notes: bool = typer.Option(
-        False, "--notes", help="Also search the Obsidian knowledge base (slower)."
+        True, "--notes/--no-notes", help="Search the Obsidian knowledge base too."
     ),
 ) -> None:
     """Answer a question from the indexed files with a DeepSeek Harness (dsh) agent.

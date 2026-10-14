@@ -128,8 +128,7 @@ struct SearchResult {
 
 // Calls back with the results plus an error message when the search failed (server
 // down, backend error), so the panel can say what went wrong instead of showing nothing.
-// `notes` adds the Obsidian knowledge base to the search; it is left out by default
-// because it answers through the Obsidian app, far slower than the local indexes.
+// `notes` adds the Obsidian knowledge base to the search (the Notes toggle, on by default).
 // `type` (a file-type id from /api/indexes) keeps only files of that kind.
 func apiSearch(_ query: String, dir: String?, allFolders: Bool, notes: Bool, type: String?,
                completion: @escaping ([SearchResult], String?) -> Void) {
@@ -692,15 +691,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSTextFieldDelegate,
         spinner.autoresizingMask = [.minXMargin, .minYMargin]
         blur.addSubview(spinner)
 
-        // Off by default, and off again at every launch: searching notes goes through
-        // the Obsidian app, which is what makes a search slow. Hidden until the selected
+        // On by default, and on again at every launch. Hidden until the selected
         // folder is known to have a knowledge base (see updateNotesToggle).
         notesToggle = NSButton(checkboxWithTitle: "Notes", target: self,
                                action: #selector(filtersChanged))
         notesToggle.frame = NSRect(x: w - 110, y: h - 46, width: 66, height: 20)
         notesToggle.controlSize = .small
         notesToggle.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
-        notesToggle.toolTip = "Also search the Obsidian knowledge base (slower)"
+        notesToggle.state = .on
+        notesToggle.toolTip = "Also search the Obsidian knowledge base"
         notesToggle.refusesFirstResponder = true  // typing stays in the search field
         notesToggle.autoresizingMask = [.minXMargin, .minYMargin]
         notesToggle.isHidden = true

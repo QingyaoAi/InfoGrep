@@ -445,3 +445,203 @@ def test_ask_api_reports_what_stops_a_question(tmp_path, monkeypatch):
         assert _answered(port, second, "done")["answer"] == "Antioxidants."
     finally:
         httpd.shutdown()
+
+
+_filled: list = []  # every _FakeFill made, in order
+
+
+class _FakeFill:
+    """Stands in for the agent infogrep.fill.start sets to work: a step, then ``reply``."""
+
+    reply = '{"fields": [{"id": "f1", "value": "Ada", "source": "/docs/cv.pdf"}], "note": "ok"}'
+
+    def __init__(self, page, fields, note="", directory=None, session=None, server=None,
+                 changed=False, memory=""):
+        self.page, self.fields, self.note = page, fields, note
+        self.directory, self.session, self.server = directory, session, server
+        self.changed, self.memory = changed, memory
+        self.cancelled = False
+        _filled.append(self)
+
+    def events(self):
+        yield {"type": "session", "id": self.session or "session-form"}
+        yield {"type": "step", "text": "Searching “name”"}
+        yield {"type": "answer", "text": self.reply, "sources": []}
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def _post_form(port, path, form, origin=None):
+    """POST a form's fields the way the extension does: as JSON, from its own origin."""
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", method="POST", data=json.dumps(form).encode(),
+        headers={"Content-Type": "application/json", **({"Origin": origin} if origin else {})},
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+_FORM = {
+    "page": {"title": "Sign up", "url": "https://example.org/join"},
+    "fields": [{"id": "f1", "kind": "text", "label": "Name"},
+               {"id": "f2", "kind": "email", "label": "Email", "value": "a@b.c"}],
+    "note": "For me.",
+}
+_EXTENSION = "chrome-extension://abcdefghijklmnop"
+
+
+def _filled_in(port, job_id, want):
+    state = {}
+    for _ in range(100):
+        state = _q(port, f"/api/fill?id={job_id}")
+        if state["status"] == want:
+            break
+        time.sleep(0.05)
+    return state
+
+
+def test_fill_api_has_the_agent_work_out_a_forms_values(tmp_path, monkeypatch):
+    import infogrep.fill
+
+    monkeypatch.setattr(infogrep.fill, "start", _FakeFill)
+    _filled.clear()
+    httpd, port = _start(_indexed_dir(tmp_path))
+    try:
+        assert "fill" in _q(port, "/api/indexes")  # whether dsh is there to do it with
+        assert _q(port, "/api/fill") == {"status": "gone"}  # nothing filled in yet
+
+        started = _post_form(port, "/api/fill?scope=all", _FORM, origin=_EXTENSION)
+        assert started == {"ok": True, "id": 1, "fields": 2}
+        state = _filled_in(port, 1, "done")
+        assert state["values"] == [{"id": "f1", "value": "Ada", "source": "/docs/cv.pdf"}]
+        assert state["note"] == "ok" and state["steps"] == ["Searching “name”"]
+        assert state["session"] == "session-form"
+
+        run = _filled[0]
+        assert run.page == _FORM["page"] and run.note == "For me."
+        assert run.fields == infogrep.fill.clean_fields(_FORM["fields"])
+        assert run.directory is None and run.session is None  # every folder, a new conversation
+        assert run.server == f"http://127.0.0.1:{port}"
+
+        assert run.changed is False
+
+        # The next round of the same form, in the same conversation and the server's folder.
+        _post_form(port, "/api/fill?session=session-form", {**_FORM, "changed": True})
+        assert str(_filled[1].directory) == str(tmp_path.resolve())
+        assert _filled[1].session == "session-form" and _filled[1].changed is True
+        assert _filled_in(port, 2, "done")["id"] == 2
+    finally:
+        httpd.shutdown()
+
+
+def test_fill_api_refuses_what_it_cannot_fill_and_reports_a_bad_reply(tmp_path, monkeypatch):
+    import infogrep.fill
+
+    monkeypatch.setattr(infogrep.fill, "start", _FakeFill)
+    monkeypatch.setattr(_FakeFill, "reply", "I could not find anything.")
+    _filled.clear()
+    httpd, port = _start(_indexed_dir(tmp_path))
+    try:
+        assert _post_form(port, "/api/fill", {"fields": []}) == {
+            "ok": False, "error": "no fields to fill in"}
+        assert _post_form(port, "/api/fill", {}) == {"ok": False, "error": "no fields to fill in"}
+        # A script on a web page can post here too; it gets nothing started.
+        refused = _post_form(port, "/api/fill", _FORM, origin="https://evil.example")
+        assert refused == {"ok": False, "error": "form filling is for the InfoGrep extension"}
+        assert _filled == []
+
+        job = _post_form(port, "/api/fill", _FORM, origin=_EXTENSION)["id"]
+        state = _filled_in(port, job, "error")
+        assert "did not reply with values, but with: I could not find anything." in state["error"]
+        assert json.loads(_post(port, "/api/fill/cancel")[1]) == {"ok": True}
+    finally:
+        httpd.shutdown()
+
+
+def test_fill_api_types_in_prose_only_when_its_file_has_it(tmp_path, monkeypatch):
+    import infogrep.fill
+
+    docs = _indexed_dir(tmp_path)  # berry.txt: "blueberries are rich in antioxidants..."
+    reply = {"fields": [
+        {"id": "f1", "value": "blueberries are rich in antioxidants",
+         "source": str(docs / "berry.txt")},
+        {"id": "f2", "value": "Blueberries cure everything.", "source": str(docs / "berry.txt")},
+    ]}
+    monkeypatch.setattr(infogrep.fill, "start", _FakeFill)
+    monkeypatch.setattr(_FakeFill, "reply", json.dumps(reply))
+    httpd, port = _start(docs)
+    try:
+        form = {"fields": [{"id": "f1", "kind": "richtext", "label": "About"},
+                           {"id": "f2", "kind": "richtext", "label": "Claims"}]}
+        job = _post_form(port, "/api/fill", form, origin=_EXTENSION)["id"]
+        values = _filled_in(port, job, "done")["values"]
+        assert [(v["id"], v["copied"]) for v in values] == [("f1", True), ("f2", False)]
+    finally:
+        httpd.shutdown()
+
+
+def test_fill_api_remembers_what_the_agent_found_and_tells_the_next_form(tmp_path, monkeypatch):
+    import infogrep.fill
+    from infogrep.memory import FormMemory
+
+    docs = _indexed_dir(tmp_path)
+    reply = {"fields": [{"id": "f1", "value": "Ada", "source": str(docs / "berry.txt")},
+                        {"id": "f2", "memory": "身份证号"}],
+             "facts": [{"name": "姓名", "value": "Ada", "source": str(docs / "berry.txt"),
+                        "stable": True},
+                       {"name": "身份证号", "value": "110101", "source": str(docs / "car.txt"),
+                        "sensitive": True}]}
+    monkeypatch.setattr(infogrep.fill, "start", _FakeFill)
+    monkeypatch.setattr(_FakeFill, "reply", json.dumps(reply))
+    _filled.clear()
+    httpd, port = _start(docs)
+    try:
+        assert _q(port, "/api/fill/memory")["facts"] == 0
+        first = _post_form(port, "/api/fill", _FORM, origin=_EXTENSION)["id"]
+        state = _filled_in(port, first, "done")
+        assert state["learned"] == 2
+        # f2 named a fact not remembered when the reply came: it is left out.
+        assert [v["id"] for v in state["values"]] == ["f1"]
+        assert "Nothing is remembered yet." in _filled[0].memory
+        assert FormMemory.load().facts["身份证号"]["value"] == "110101"
+
+        # The next form is told what is remembered, the hidden fact without its value,
+        # and gets that value put in where the agent names it.
+        second = _post_form(port, "/api/fill", _FORM, origin=_EXTENSION)["id"]
+        state = _filled_in(port, second, "done")
+        assert '{"name": "姓名", "value": "Ada"}' in _filled[1].memory
+        assert '{"name": "身份证号", "hidden": true}' in _filled[1].memory
+        assert "110101" not in _filled[1].memory
+        assert state["values"][1] == {"id": "f2", "value": "110101", "remembered": "身份证号",
+                                      "source": str(docs / "car.txt")}
+        assert _q(port, "/api/fill/memory")["facts"] == 2
+
+        # Off: nothing remembered is said, and nothing is learned.
+        third = _post_form(port, "/api/fill", {**_FORM, "memory": False}, origin=_EXTENSION)["id"]
+        assert _filled_in(port, third, "done")["learned"] == 0 and _filled[2].memory == ""
+        # A later form of the same conversation already knows: it isn't told again.
+        _post_form(port, "/api/fill?session=session-form", _FORM, origin=_EXTENSION)
+        assert _filled[3].memory == ""
+    finally:
+        httpd.shutdown()
+
+
+def test_a_notes_toggle_is_offered_only_where_a_vault_is_found(tmp_path, monkeypatch):
+    from infogrep.retrieval import kb as kb_module
+
+    monkeypatch.setattr(kb_module, "_registries", list)  # no Obsidian on this machine
+    (tmp_path / "docs").mkdir()
+    docs = _indexed_dir(tmp_path / "docs")
+    cfg = Config.load(docs)
+    (cfg.index_dir / "config.toml").write_text(_LIGHT_CONFIG + "[kb]\nenabled = true\n")
+    httpd, port = _start(docs)
+    try:
+        assert [i["kb"] for i in _q(port, "/api/indexes")["indexes"]] == [False]
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (cfg.index_dir / "config.toml").write_text(
+            _LIGHT_CONFIG + f"[kb]\nenabled = true\nvault_path = '{vault}'\n")
+        assert [i["kb"] for i in _q(port, "/api/indexes")["indexes"]] == [True]
+    finally:
+        httpd.shutdown()

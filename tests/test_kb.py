@@ -1,43 +1,29 @@
+"""The knowledge-base retriever, against vaults made of real files: no Obsidian needed."""
+
 import json
-import shutil
-import subprocess
+import os
 
 import pytest
 
 from infogrep.config import Config
 from infogrep.engine import SearchEngine
-from infogrep.retrieval.kb import KnowledgeBaseIndex, ObsidianCliError
+from infogrep.retrieval import kb as kb_module
+from infogrep.retrieval.kb import KnowledgeBaseIndex, VaultUnavailable, vault_root
 
 
-class FakeObsidian:
-    """Stand-in for the Obsidian CLI: returns canned JSON for each subcommand."""
-
-    def __init__(self, search=None, links=None, backlinks=None, contents=None, error=None):
-        self.search = search or []
-        self.links = links or {}
-        self.backlinks = backlinks or {}
-        self.contents = contents or {}
-        self.error = error
-        self.calls = []
-
-    def __call__(self, command, params):
-        self.calls.append((command, params))
-        if self.error:
-            return self.error
-        if command == "search":
-            return json.dumps(self.search)
-        if command == "links":
-            return json.dumps(self.links.get(params["path"], []))
-        if command == "backlinks":
-            return json.dumps(self.backlinks.get(params["path"], []))
-        if command == "read":
-            return self.contents.get(params["path"], "")
-        return ""
+def _vault(tmp_path, notes):
+    root = tmp_path / "vault"
+    for path, text in notes.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    (root / ".obsidian").mkdir(parents=True, exist_ok=True)
+    return root
 
 
-def _cfg(tmp_path, **kb):
+def _cfg(tmp_path, vault=None, **kb):
     cfg = Config.load(tmp_path)
     cfg.kb.enabled = True
+    cfg.kb.vault_path = str(vault) if vault else None
     cfg.sparse.enabled = False
     cfg.dense.enabled = False
     cfg.graph.enabled = False
@@ -46,184 +32,240 @@ def _cfg(tmp_path, **kb):
     return cfg
 
 
-def test_parse_paths_tolerates_json_lines_and_filters_non_md(tmp_path):
-    kb = KnowledgeBaseIndex(_cfg(tmp_path), runner=FakeObsidian())
-    assert kb._parse_paths('["a.md", "b/c.md", "d.base"]') == ["a.md", "b/c.md"]
-    assert kb._parse_paths("a.md\nx.png\nb.md") == ["a.md", "b.md"]
-    assert kb._parse_paths("No results found.") == []
-    assert kb._parse_paths("Error: something") == []
+def _kb(tmp_path, notes, **kb):
+    return KnowledgeBaseIndex(_cfg(tmp_path, _vault(tmp_path, notes), **kb))
 
 
-def test_search_ranks_by_search_order(tmp_path):
-    fake = FakeObsidian(search=["First.md", "Second.md"], contents={"First.md": "alpha"})
-    kb = KnowledgeBaseIndex(_cfg(tmp_path, hops=0), runner=fake)
-    hits = kb.search("alpha", k=5)
-    assert [h.path for h in hits] == ["First.md", "Second.md"]
-    assert hits[0].score > hits[1].score
-    assert hits[0].retriever == "kb"
+def _paths(hits):
+    return [h.path for h in hits]
 
 
-def test_graph_expansion_follows_links_and_backlinks(tmp_path):
-    # Query matches only Attention; hops=1 pulls in its outgoing link (Positional
-    # Encoding) AND its backlink (Transformers), neither of which match the query.
-    fake = FakeObsidian(
-        search=["Attention.md"],
-        links={"Attention.md": ["Positional Encoding.md"]},
-        backlinks={"Attention.md": ["Transformers.md"]},
-        contents={"Attention.md": "softmax over scores"},
-    )
-    cfg = _cfg(tmp_path, hops=1)
-    paths = {h.path for h in KnowledgeBaseIndex(cfg, runner=fake).search("softmax", k=10)}
-    assert paths == {"Attention.md", "Positional Encoding.md", "Transformers.md"}
-
-    cfg0 = _cfg(tmp_path, hops=0)
-    paths0 = {h.path for h in KnowledgeBaseIndex(cfg0, runner=fake).search("softmax", k=10)}
-    assert paths0 == {"Attention.md"}
+# -- searching ----------------------------------------------------------------------
 
 
-def test_per_note_lookups_are_reused_across_queries(tmp_path, monkeypatch):
-    # Search-as-you-type: each keystroke is a query over mostly the same notes.
-    from infogrep.retrieval import kb as kb_module
-
-    fake = FakeObsidian(
-        search=["A.md"], links={"A.md": ["B.md"]}, contents={"A.md": "alpha", "B.md": "beta"}
-    )
-    kb = KnowledgeBaseIndex(_cfg(tmp_path, hops=1), runner=fake)
-    first = kb.search("alp", k=5)
-    assert {h.path for h in first} == {"A.md", "B.md"}
-
-    seen = len(fake.calls)
-    assert kb.search("alph", k=5) == first
-    assert [command for command, _ in fake.calls[seen:]] == ["search"]
-
-    # Not forever: once an entry expires, an edit made in Obsidian shows up.
-    fake.contents["A.md"] = "alpha, edited"
-    monkeypatch.setattr(kb_module, "_LOOKUP_TTL", 0.0)
-    assert kb.search("alpha", k=5)[0].snippet == "alpha, edited"
+def test_search_ranks_by_relevance_with_titles_weighted_up(tmp_path):
+    kb = _kb(tmp_path, {
+        "Softmax.md": "A short note.",
+        "Attention.md": "Attention puts a softmax over the scores; softmax again.",
+        "Other.md": "Nothing to see.",
+    }, hops=0)
+    hits = kb.search("softmax", k=5)
+    assert _paths(hits) == ["Softmax.md", "Attention.md"]  # the title outweighs the text
+    assert hits[0].score > hits[1].score and hits[0].retriever == "kb"
 
 
-def _first_call_hangs(monkeypatch):
-    """The app never answers the first CLI invocation; later ones succeed."""
-    calls = []
-
-    def fake_run(args, **kwargs):
-        calls.append((args, kwargs["timeout"]))
-        if len(calls) == 1:
-            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
-        return subprocess.CompletedProcess(args, 0, stdout='["A.md"]', stderr="")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    return calls
+def test_chinese_matches_by_character_pairs(tmp_path):
+    kb = _kb(tmp_path, {
+        "项目.md": "本项目研究信息检索与排序学习。",
+        "生活.md": "周末去爬山。",
+    }, hops=0)
+    assert _paths(kb.search("信息检索", k=5)) == ["项目.md"]
+    assert _paths(kb.search("检索", k=5)) == ["项目.md"]
+    assert kb.search("检索", k=1)[0].snippet.startswith("本项目研究信息检索")
 
 
-def test_unanswered_read_is_given_up_on_quickly_and_retried(tmp_path, monkeypatch):
-    calls = _first_call_hangs(monkeypatch)
-    kb = KnowledgeBaseIndex(_cfg(tmp_path))
-    assert kb._neighbors("X.md") == {"A.md"}
-    # links (lost, then asked again), backlinks: per-note lookups answer in
-    # milliseconds or never, so they get seconds, not the 30 s a write is allowed.
-    assert [(args[1], timeout) for args, timeout in calls] == [
-        ("links", 2.0), ("links", 2.0), ("backlinks", 2.0),
-    ]
+def test_an_unfinished_last_word_matches_the_words_it_begins(tmp_path):
+    # Search as you type: "alp" is "alpha" on its way.
+    kb = _kb(tmp_path, {"A.md": "alpha particles", "B.md": "beta"}, hops=0)
+    assert _paths(kb.search("alp", k=5)) == ["A.md"]
+    assert kb.search("alp ", k=5) == []  # once a space follows, it is a word of its own
 
 
-def test_unanswered_search_is_retried_but_given_time(tmp_path, monkeypatch):
-    # The vault search is legitimately slow for common words (seconds), so it is
-    # allowed far longer than a lookup before being written off as lost.
-    calls = _first_call_hangs(monkeypatch)
-    kb = KnowledgeBaseIndex(_cfg(tmp_path))
-    assert kb._search("anything") == ["A.md"]
-    assert [args[1] for args, _ in calls] == ["search", "search"]
-    assert all(10 <= timeout < 30 for _, timeout in calls)
+def test_titles_aliases_and_tags_are_searchable(tmp_path):
+    kb = _kb(tmp_path, {
+        "Notes/ltr.md": "---\naliases: [Learning to Rank]\ntags:\n  - ranking\n---\nbody",
+        "Notes/other.md": "Some #retrieval thoughts.",
+    }, hops=0)
+    assert _paths(kb.search("learning to rank", k=5)) == ["Notes/ltr.md"]
+    assert _paths(kb.search("ranking", k=5)) == ["Notes/ltr.md"]
+    assert _paths(kb.search("retrieval", k=5)) == ["Notes/other.md"]
 
 
-def test_unanswered_write_is_not_repeated(tmp_path, monkeypatch):
-    # A create that timed out may still have landed; a second one would add "name 1.md".
-    calls = _first_call_hangs(monkeypatch)
-    kb = KnowledgeBaseIndex(_cfg(tmp_path))
-    with pytest.raises(ObsidianCliError):
-        kb.create_note("Agent Knowledge/x.md", "body")
-    assert len(calls) == 1
-
-
-def test_snippet_strips_frontmatter_and_centers_on_match(tmp_path):
-    content = "---\ntitle: A\ntags: []\n---\nIntro line. The softmax normalizes scores nicely."
-    fake = FakeObsidian(search=["A.md"], contents={"A.md": content})
-    kb = KnowledgeBaseIndex(_cfg(tmp_path, hops=0), runner=fake)
-    snip = kb.search("softmax", k=1)[0].snippet
-    assert "title: A" not in snip  # frontmatter removed
-    assert "softmax" in snip
-
-
-def test_app_down_raises(tmp_path):
-    fake = FakeObsidian(error="Error: please make sure Obsidian is running")
-    kb = KnowledgeBaseIndex(_cfg(tmp_path), runner=fake)
-    with pytest.raises(ObsidianCliError):
-        kb.search("anything", k=3)
-    assert isinstance(ObsidianCliError("x"), FileNotFoundError)
-
-
-def test_hybrid_skips_kb_when_app_down(tmp_path):
-    cfg = _cfg(tmp_path)
-    engine = SearchEngine(cfg)
-    engine._backends["kb"] = KnowledgeBaseIndex(
-        cfg, runner=FakeObsidian(error="Error: make sure Obsidian is running")
-    )
-    out = engine.search_hybrid("x", k=3, retrievers=["kb"])
-    assert out.used == []
-    assert "kb" in out.skipped
-
-
-def test_hybrid_includes_kb(tmp_path):
-    cfg = _cfg(tmp_path)
-    engine = SearchEngine(cfg)
-    engine._backends["kb"] = KnowledgeBaseIndex(
-        cfg, runner=FakeObsidian(search=["Note.md"], contents={"Note.md": "hello world"})
-    )
-    out = engine.search_hybrid("hello", k=3)
-    assert out.used == ["kb"]
-    assert out.results and out.results[0].retriever == "hybrid"
-
-
-def test_hybrid_exclude_never_calls_kb(tmp_path):
-    cfg = _cfg(tmp_path)
-    cfg.graph.enabled = True
-    engine = SearchEngine(cfg)
-    fake = FakeObsidian(search=["Note.md"], contents={"Note.md": "hello world"})
-    engine._backends["kb"] = KnowledgeBaseIndex(cfg, runner=fake)
-    out = engine.search("hybrid", "hello", k=3, exclude=("kb",))
-    assert out.used == ["graph"]
-    assert out.skipped == {}  # left out on request, not a backend that failed
-    assert fake.calls == []
+def test_snippet_skips_the_frontmatter_and_centers_on_the_match(tmp_path):
+    kb = _kb(tmp_path, {
+        "A.md": "---\ntitle: A\ntags: []\n---\nIntro line. The softmax normalizes scores nicely."
+    }, hops=0)
+    snippet = kb.search("softmax", k=1)[0].snippet
+    assert "title: A" not in snippet and "softmax" in snippet
 
 
 def test_type_filter_skips_the_vault_unless_markdown_is_wanted(tmp_path):
-    fake = FakeObsidian(search=["Note.md"], contents={"Note.md": "hello world"})
-    kb = KnowledgeBaseIndex(_cfg(tmp_path, hops=0), runner=fake)
+    kb = _kb(tmp_path, {"Note.md": "hello world"}, hops=0)
     assert kb.search("hello", k=3, exts=("pdf",)) == []
-    assert fake.calls == []  # notes are Markdown: nothing to ask Obsidian for
-    assert [h.path for h in kb.search("hello", k=3, exts=("txt", "md"))] == ["Note.md"]
+    assert _paths(kb.search("hello", k=3, exts=("txt", "md"))) == ["Note.md"]
 
 
-# -- guarded integration test against the real Obsidian CLI -----------------
-
-def _obsidian_live() -> bool:
-    if not shutil.which("obsidian"):
-        return False
-    try:
-        out = subprocess.run(
-            ["obsidian", "vault"], capture_output=True, text=True, timeout=15, check=False
-        ).stdout.lower()
-        return "error" not in out and bool(out.strip())
-    except Exception:
-        return False
+def test_hidden_folders_and_excluded_files_stay_out(tmp_path):
+    root = _vault(tmp_path, {
+        "Keep.md": "hello", ".trash/Gone.md": "hello", "Archive/Old.md": "hello",
+        "Drafts/x.md": "hello",
+    })
+    (root / ".obsidian" / "app.json").write_text(
+        json.dumps({"userIgnoreFilters": ["Archive/", "/^Drafts/"]}))
+    kb = KnowledgeBaseIndex(_cfg(tmp_path, root, hops=0))
+    assert _paths(kb.search("hello", k=10)) == ["Keep.md"]
 
 
-@pytest.mark.skipif(not _obsidian_live(), reason="Obsidian CLI/app not available")
-def test_real_cli_search_runs(tmp_path):
-    cfg = _cfg(tmp_path, hops=0)
-    hits = KnowledgeBaseIndex(cfg).search("the", k=3)
-    assert isinstance(hits, list)
-    for h in hits:
-        assert h.path.lower().endswith(".md")
-        assert h.retriever == "kb"
+# -- links ----------------------------------------------------------------------------
+
+
+def test_graph_expansion_follows_links_and_backlinks(tmp_path):
+    # The query matches only Attention; one hop brings in the note it links to (Positional
+    # Encoding) and the note linking to it (Transformers), neither of which matches.
+    notes = {
+        "Attention.md": "softmax over scores, see [[Positional Encoding]]",
+        "Positional Encoding.md": "sines and cosines",
+        "Transformers.md": "built on ![[Attention#Scores|attention]]",
+        "Unrelated.md": "nothing",
+    }
+    paths = set(_paths(_kb(tmp_path, notes, hops=1).search("softmax", k=10)))
+    assert paths == {"Attention.md", "Positional Encoding.md", "Transformers.md"}
+    assert _paths(KnowledgeBaseIndex(_cfg(tmp_path, tmp_path / "vault", hops=0))
+                  .search("softmax", k=10)) == ["Attention.md"]
+
+
+def test_links_resolve_the_way_obsidian_resolves_them(tmp_path):
+    kb = _kb(tmp_path, {
+        "Home.md": ("[[Plan]] [[2024/Plan|this year]] [[Alias Name]] [[Topics/sub/Deep]] "
+                    "[text](Topics/My%20Note.md) [[photo.png]] [[Not Yet Written]] "
+                    "[site](https://example.org/x.md)"),
+        "Plan.md": "", "2024/Plan.md": "", "Topics/My Note.md": "",
+        "Topics/sub/Deep.md": "", "Aliased.md": "---\naliases:\n  - Alias Name\n---\n",
+        "Projects/Plan.md": "[[Plan]]",  # the Plan in its own folder is the one it means
+        "Projects/Index.md": "---\nup: \"[[Home]]\"\n---\n",  # a link in a property counts
+    })
+    kb._refresh(force=True)
+    assert kb._links["Home.md"] == {
+        "Plan.md", "2024/Plan.md", "Aliased.md", "Topics/sub/Deep.md", "Topics/My Note.md"}
+    assert kb._links["Projects/Plan.md"] == set()  # [[Plan]] there is itself
+    assert kb._links["Projects/Index.md"] == {"Home.md"}
+    assert "Projects/Index.md" in kb._backlinks["Home.md"]
+
+
+# -- keeping up with the files ----------------------------------------------------------
+
+
+def test_edits_new_and_deleted_notes_show_up(tmp_path, monkeypatch):
+    monkeypatch.setattr(kb_module, "_REFRESH_S", 0.0)
+    root = _vault(tmp_path, {"A.md": "alpha", "B.md": "beta"})
+    kb = KnowledgeBaseIndex(_cfg(tmp_path, root, hops=0))
+    assert _paths(kb.search("alpha", k=5)) == ["A.md"]
+
+    (root / "A.md").write_text("alpha, edited")
+    os.utime(root / "A.md", ns=(1, 1))  # a different stamp, however fast the test runs
+    (root / "C.md").write_text("alpha too")
+    (root / "B.md").unlink()
+    hits = kb.search("alpha", k=5)
+    assert set(_paths(hits)) == {"A.md", "C.md"}
+    assert "edited" in next(h.snippet for h in hits if h.path == "A.md")
+    assert kb.search("beta", k=5) == []
+
+
+def test_the_files_are_looked_at_every_couple_of_seconds_at_most(tmp_path, monkeypatch):
+    root = _vault(tmp_path, {"A.md": "alpha"})
+    kb = KnowledgeBaseIndex(_cfg(tmp_path, root, hops=0))
+    kb.search("alpha", k=5)
+    walks = []
+    monkeypatch.setattr(kb_module.os, "walk", lambda *a, **k: walks.append(a) or iter(()))
+    kb.search("alph", k=5)
+    assert walks == []  # search as you type: one look serves the keystrokes that follow
+
+
+# -- which vault ----------------------------------------------------------------------
+
+
+def test_the_vault_comes_from_obsidians_own_list(tmp_path, monkeypatch):
+    work, home = tmp_path / "Work", tmp_path / "Home"
+    work.mkdir()
+    home.mkdir()
+    registry = tmp_path / "obsidian.json"
+    registry.write_text(json.dumps({"vaults": {
+        "a": {"path": str(work), "ts": 2},
+        "b": {"path": str(home), "ts": 1, "open": True},
+    }}))
+    monkeypatch.setattr(kb_module, "_registries", lambda: [registry])
+    cfg = _cfg(tmp_path)
+    assert vault_root(cfg.kb) == home  # the one open in Obsidian
+    cfg.kb.vault = "Work"
+    assert vault_root(cfg.kb) == work  # the one named
+    cfg.kb.vault = "Missing"
+    assert vault_root(cfg.kb) is None
+    cfg.kb.vault_path = str(work)
+    assert vault_root(cfg.kb) == work  # a path given outright wins
+
+
+def test_no_vault_raises_and_hybrid_skips_kb(tmp_path, monkeypatch):
+    monkeypatch.setattr(kb_module, "_registries", list)
+    cfg = _cfg(tmp_path)
+    with pytest.raises(VaultUnavailable):
+        KnowledgeBaseIndex(cfg).search("anything", k=3)
+    assert isinstance(VaultUnavailable("x"), FileNotFoundError)
+    out = SearchEngine(cfg).search_hybrid("x", k=3, retrievers=["kb"])
+    assert out.used == [] and "kb" in out.skipped
+
+
+# -- in the engine --------------------------------------------------------------------
+
+
+def test_hybrid_includes_kb_and_results_point_at_the_note_file(tmp_path):
+    root = _vault(tmp_path, {"Note.md": "hello world"})
+    engine = SearchEngine(_cfg(tmp_path, root))
+    out = engine.search_hybrid("hello", k=3)
+    assert out.used == ["kb"]
+    assert out.results and out.results[0].retriever == "hybrid"
+    hit = engine.search_kb("hello", k=1)[0]
+    assert hit.abs_path == str(root / "Note.md") and hit.mtime is not None
+
+
+def test_hybrid_exclude_never_reads_the_vault(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, _vault(tmp_path, {"Note.md": "hello world"}))
+    cfg.graph.enabled = True
+    engine = SearchEngine(cfg)
+    monkeypatch.setattr(kb_module.os, "walk", lambda *a, **k: pytest.fail("vault read"))
+    out = engine.search("hybrid", "hello", k=3, exclude=("kb",))
+    assert out.used == ["graph"]
+    assert out.skipped == {}  # left out on request, not a backend that failed
+
+
+# -- writing --------------------------------------------------------------------------
+
+
+def test_notes_are_written_only_inside_the_agent_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(kb_module, "_REFRESH_S", 0.0)
+    root = _vault(tmp_path, {"Mine.md": "my own note"})
+    kb = KnowledgeBaseIndex(_cfg(tmp_path, root, hops=0))
+    kb.create_note("Agent Knowledge/Topics/x.md", "line one\nline two")
+    assert (root / "Agent Knowledge/Topics/x.md").read_text() == "line one\nline two"
+    assert kb.read_note("Agent Knowledge/Topics/x.md") == "line one\nline two"
+    assert kb.read_note("Agent Knowledge/missing.md") is None
+    with pytest.raises(FileExistsError):
+        kb.create_note("Agent Knowledge/Topics/x.md", "again")
+    kb.create_note("Agent Knowledge/Topics/x.md", "replaced", overwrite=True)
+    kb.append_note("Agent Knowledge/Topics/x.md", "- one more")
+    assert kb.read_note("Agent Knowledge/Topics/x.md") == "replaced\n- one more\n"
+    assert _paths(kb.search("replaced", k=3)) == ["Agent Knowledge/Topics/x.md"]
+
+    for elsewhere in ("Mine.md", "Agent Knowledge/../Mine.md", "/etc/x.md", "Agent Knowledgeable/x.md"):
+        with pytest.raises(ValueError):
+            kb.create_note(elsewhere, "overwritten")
+    assert (root / "Mine.md").read_text() == "my own note"
+    assert list(root.rglob(".infogrep-*")) == []  # no half-written files left about
+
+
+def test_html_in_imported_notes_is_read_past(tmp_path):
+    kb = _kb(tmp_path, {
+        "Evernote.md": ('<div><span style="font-family:PingFangSC">领取护照</span>&nbsp;'
+                        '<br/>北京&amp;清华</div><style>p { color: red }</style>'),
+        "Plain.md": "a note about fonts and span widths",
+    }, hops=0)
+    snippet = kb.search("领取护照", k=1)[0].snippet
+    assert snippet == "领取护照 北京&清华"
+    assert _paths(kb.search("span", k=5)) == ["Plain.md"]  # markup is not a word of the note
+    assert kb.search("color", k=5) == []
+
+
+def test_warming_reads_the_vault(tmp_path):
+    root = _vault(tmp_path, {"A.md": "alpha"})
+    engine = SearchEngine(_cfg(tmp_path, root))
+    engine.warm()
+    assert list(engine.kb._notes) == ["A.md"]

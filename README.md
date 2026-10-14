@@ -382,7 +382,7 @@ files, and putting it together — InfoGrep can hand it to a
 infogrep ask "Which of my proposals mention a budget above 500k, and for what?"
 infogrep ask "…" --dir /path/to/one/folder    # default: every indexed folder
 infogrep ask --continue "And which of those were funded?"   # follow up on the last answer
-infogrep ask "…" --notes                      # also let it search the Obsidian knowledge base
+infogrep ask "…" --no-notes                   # leave the Obsidian knowledge base out
 ```
 
 The same thing is in the macOS launcher (the **Ask** button, or **Tab**) and in the browser
@@ -394,10 +394,9 @@ nothing else is set up, and `infogrep dsh install` is not required.
   above, reads what it needs, answers, and exits. Nothing runs between questions, and the
   server answers one question at a time (asking another stops the one in flight). A question
   still unanswered after 10 minutes is stopped.
-- **No knowledge base unless you say so.** The Obsidian vault answers through the Obsidian
-  app, far slower than the indexes, and an agent searches many times per question. So it is
-  left out — of the fused search and as a tool — unless you pass `--notes`, tick **Notes** in
-  the launcher, or tick *include notes* in the browser UI.
+- **Notes included.** Where a folder has a knowledge base, its Obsidian vault is searched
+  too, adding about a millisecond to a search. Pass `--no-notes`, or untick **Notes** in the
+  launcher or *include notes* in the browser UI, to leave it out.
 - **Read-only.** The agent runs under dsh's read-only file policy with nobody to approve an
   exception, and from InfoGrep it gets the search tools and `read_file`, not `reindex` or
   `kb_learn`. It can read your files and change none of them.
@@ -408,6 +407,20 @@ nothing else is set up, and `infogrep dsh install` is not required.
   log at `~/.infogrep/ask/` instead of `~/.dsh/`, where InfoGrep deletes conversations a week
   after they were last used. `./uninstall.sh` removes that folder.
 
+### Fill in web forms (Chrome extension)
+
+[`extension/`](extension/) is a Chrome side panel that fills in the form on the page you have
+open, from your files. It reads the page's fields, the same agent as Ask looks each value up
+(read-only, through the server), and the panel types the values in and lists where each one
+came from. It also fills the dropdowns and cascaders of Element UI, Element Plus and Ant
+Design, and rich-text editors (with prose copied word for word from a file, never written),
+and it takes the fields a choice brings onto the page in further rounds. It remembers the
+facts about you that it finds, in a note in your vault that you can edit, so that the next
+form needn't search for them again. It never presses a button or submits the page. Load it
+with **Load unpacked** on `chrome://extensions`, from a checkout or from the zip attached to
+each release; it needs the server running and `dsh` set up, as Ask does. See
+[extension/README.md](extension/README.md) for what it sends where and what it can't fill.
+
 ### Browser UI
 
 ```bash
@@ -416,7 +429,8 @@ infogrep serve --dir <dir>    # http://127.0.0.1:7421 by default
 
 A search box, a mode selector (hybrid/sparse/dense/kb/graph, plus **Ask** when `dsh` is
 installed), result snippets with path/page/score, folder management (add/switch indexed
-directories), and a JSON API at `/api/search` and `/api/status`. Bound to localhost only.
+directories), and a JSON API at `/api/search` and `/api/status` (plus `/api/ask`, and
+`/api/fill` for the browser extension). Bound to localhost only.
 
 ### Folder/filename metadata graph
 
@@ -438,21 +452,33 @@ max_folders = 5   # top-scoring folders to expand into file candidates per query
 
 ### Knowledge base (Obsidian vault)
 
-`search_kb` adds graph-aware search over an Obsidian vault via the **Obsidian CLI**: it
-searches the live vault, then expands along links/backlinks so notes *connected* to a match
-surface too — always current, no separate index. Requires the Obsidian app running with the
-vault open. Enable per directory:
+`search_kb` adds graph-aware search over an Obsidian vault. It reads the vault's Markdown
+files itself, so the Obsidian app needn't be running: it matches notes by BM25 over their
+text, with titles, aliases and tags weighted up (Chinese in character pairs, as the sparse
+index does), then expands along links and backlinks (`[[wikilinks]]`, embeds, links in
+properties, Markdown links, resolved the way Obsidian resolves them) so that notes
+*connected* to a match surface too. The notes are kept parsed in memory and re-read only
+when their file changes: the first search reads the vault (under a second for ~2,000
+notes), and later ones take about a millisecond. An edit made in Obsidian shows up within
+a couple of seconds. Hidden folders (`.obsidian`, `.trash`) and Obsidian's *Excluded files*
+are left out. Enable per directory:
 
 ```toml
 [kb]
 enabled = true
-vault = "My Vault"   # Obsidian vault name; omit to use the CLI's active vault
-hops = 1              # link hops to expand (follows links + backlinks)
-# cli = "obsidian"    # path to the Obsidian CLI, if not on PATH
+vault = "My Vault"     # Obsidian vault name; omit for the vault open in Obsidian
+# vault_path = "~/Notes/My Vault"   # or the vault's folder outright
+hops = 1                # link hops to expand (follows links + backlinks)
 ```
 
-If the app isn't running, `search_kb` is skipped (in hybrid) or reports a clear error
-(standalone).
+The vault is found in Obsidian's own list of vaults, by name or as the one open last. If
+none is found, `search_kb` is skipped (in hybrid) or reports a clear error (standalone), and
+the launcher and browser UI don't offer the Notes switch. Results carry the note's full
+path, so they can be opened, and `read_file` reads them.
+
+Obsidian itself isn't needed: a vault is a folder of Markdown notes. Without Obsidian
+installed, set `vault_path` to such a folder (any notes app that keeps plain `.md` files,
+with or without `[[wikilinks]]`) and it is searched the same way.
 
 ### Building the knowledge base from your files (`learn`)
 
@@ -529,8 +555,8 @@ device = "auto"                          # "auto" -> mps/cuda/cpu
 
 [kb]
 enabled = false
-vault = ""      # Obsidian vault name; empty -> the CLI's active vault
-cli = "obsidian"
+vault = ""      # Obsidian vault name; empty -> the vault open in Obsidian
+vault_path = "" # the vault's folder, when Obsidian's list of vaults doesn't have it
 hops = 1
 search_limit = 10
 agent_folder = "Agent Knowledge"   # vault folder `infogrep learn` writes into

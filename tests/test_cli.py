@@ -51,12 +51,12 @@ def test_ask_prints_progress_the_answer_and_its_sources(monkeypatch):
     result = runner.invoke(app, ["ask", "How much is transport?"])
     assert result.exit_code == 0
     assert "[infogrep] Searching “budget”" in result.output
-    # The knowledge base is left out unless --notes asks for it.
-    assert "1,500 yuan (session: None, notes: False).\n\nSources:\n  /docs/plan.docx" in result.output
+    # The knowledge base is searched too, unless --no-notes says not to.
+    assert "1,500 yuan (session: None, notes: True).\n\nSources:\n  /docs/plan.docx" in result.output
 
     monkeypatch.setattr(infogrep.ask, "latest_session", lambda: "session-9")
-    result = runner.invoke(app, ["ask", "--continue", "--notes", "And meals?"])
-    assert "(session: session-9, notes: True)" in result.output  # picks up the last conversation
+    result = runner.invoke(app, ["ask", "--continue", "--no-notes", "And meals?"])
+    assert "(session: session-9, notes: False)" in result.output  # picks up the last conversation
 
 
 def test_ask_reports_why_there_is_no_answer(monkeypatch):
